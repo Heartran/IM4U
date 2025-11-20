@@ -3,7 +3,9 @@
 #pragma once
 
 
+#include "CoreMinimal.h"
 #include "Engine.h"
+#include "Math/IntPoint.h"
 #include "MMDImportHelper.h"
 #include "VmdImportUI.h"
 
@@ -262,7 +264,7 @@ struct VMDImportOptions
 	USkeleton* SkeletonForAnimation;
 	USkeletalMesh* SkeletalMeshForAnimation;
 	//EFBXAnimationLengthImportType AnimationLengthImportType;
-	struct FIntPoint AnimationRange;
+	FIntPoint AnimationRange;
 	FString AnimationName;
 
 	UAnimSequence* AnimSequenceAsset;

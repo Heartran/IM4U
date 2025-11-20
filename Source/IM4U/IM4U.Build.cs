@@ -23,6 +23,8 @@ namespace UnrealBuildTool.Rules
 		
 		public IM4U(ReadOnlyTargetRules Target) : base(Target)
 		{
+			PublicDefinitions.Add("IM4U_FACTORY_MATINEEACTOR_VMD=0");
+
 			string LibEHWinSourcePath = ThirdPartyPath + "LibEncodeHelperWin/";
 
 			string LibEHWinIncPath = LibEHWinSourcePath + "LibEncodeHelperWin/";

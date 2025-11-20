@@ -19,12 +19,16 @@
 #include "MMD2UE4NameTableRow.h"
 #include "MMDExtendAsset.h"
 
-#include "Matinee/InterpTrackMoveAxis.h"
-
 #include "VmdFactory.generated.h"
 
 // Forward declaration
 class UInterpGroupInst;
+
+#if IM4U_FACTORY_MATINEEACTOR_VMD
+class AMatineeActor;
+class UInterpTrackMove;
+class UInterpTrackMoveAxis;
+#endif
 
 DECLARE_LOG_CATEGORY_EXTERN(LogMMD4UE4_VMDFactory, Log, All)
 
@@ -136,6 +140,7 @@ class IM4U_API UVmdFactory : public UFactory
 		);
 	////////////////////////////////////////
 
+	#if IM4U_FACTORY_MATINEEACTOR_VMD
 	// VMD -> Matinee actor test
 	bool ImportMatineeSequence(
 		AMatineeActor* InMatineeActor,
@@ -197,6 +202,7 @@ class IM4U_API UVmdFactory : public UFactory
 		//FbxAnimCurve* RealCurve,
 		float DefaultVal
 		);
+	#endif
 	//base flame rate [ms]
 	float baseFrameRate;
 };

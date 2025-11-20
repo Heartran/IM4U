@@ -2,6 +2,8 @@
 #include "Factory/VmdImportOption.h"
 #include "../IM4UPrivatePCH.h"
 
+#include "Styling/AppStyle.h"
+
 #if 0
 void SVMDImportOptions::Construct(const FArguments& InArgs)
 {
@@ -22,7 +24,7 @@ void SVMDImportOptions::Construct(const FArguments& InArgs)
 	this->ChildSlot
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush(TEXT("Menu.Background")))
+			.BorderImage(FAppStyle::Get().GetBrush(TEXT("Menu.Background")))
 			.Padding(10)
 			[
 				SNew(SVerticalBox)
