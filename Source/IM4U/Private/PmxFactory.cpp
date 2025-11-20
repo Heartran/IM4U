@@ -560,7 +560,7 @@ UObject* UPmxFactory::FactoryCreateBinary
 								InParent,
 								//FName(*NewObject->GetName()),
 								Cast<USkeletalMesh>(NewObject),
-								&pmxMeshInfoPtr
+								pmxMeshInfoPtr
 								);
 
 						}
