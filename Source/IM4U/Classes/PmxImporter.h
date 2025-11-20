@@ -3,12 +3,20 @@
 
 
 #include "Engine.h"
+#include "Math/IntPoint.h"
 
 #include "MMDImportHelper.h"
 #include "PmxImportUI.h"
 #include "MMDExtendAsset.h"
 
 #include "MMDStaticMeshImportData.h"
+
+#if IM4U_FACTORY_MATINEEACTOR_VMD
+class AMatineeActor;
+class UInterpGroupInst;
+class UInterpTrackMove;
+class UInterpTrackMoveAxis;
+#endif
 
 
 /////////////////////////////////////////////////
@@ -365,7 +373,7 @@ struct PMXImportOptions
 	// Animation option
 	USkeleton* SkeletonForAnimation;
 	//EFBXAnimationLengthImportType AnimationLengthImportType;
-	struct FIntPoint AnimationRange;
+	FIntPoint AnimationRange;
 	FString AnimationName;
 	bool	bPreserveLocalTransform;
 	bool	bImportCustomAttribute;
@@ -1095,6 +1103,7 @@ protected:
 	//
 	// for matinee export
 	//
+#if IM4U_FACTORY_MATINEEACTOR_VMD
 public:
 	/**
 	* Retrieves whether there are any unknown camera instances within the FBX document.
@@ -1173,6 +1182,9 @@ protected:
 	*/
 	EInterpCurveMode GetUnrealInterpMode(FbxAnimCurveKey FbxKey);
 
+#endif // IM4U_FACTORY_MATINEEACTOR_VMD
+
+protected:
 	/**
 	* Fill up and verify bone names for animation
 	*/

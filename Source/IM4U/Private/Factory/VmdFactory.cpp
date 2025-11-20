@@ -5,16 +5,35 @@
 
 #include "VmdImporter.h"
 
+#include "Animation/AnimData/IAnimationDataController.h"
+#include "Animation/AnimData/IAnimationDataModel.h"
 #include "CoreMinimal.h"
 #include "ImportUtils/SkelImport.h"
 #include "AnimationUtils.h"
 #include "ObjectTools.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 #include "VmdImportUI.h"
 
 
 #include "Factory/VmdImportOption.h"
+
+namespace
+{
+	template<typename T>
+	T GetAnimationKeyValue(const TArray<T>& Keys, int32 KeyIndex, const T& DefaultValue)
+	{
+		if (Keys.IsValidIndex(KeyIndex))
+		{
+			return Keys[KeyIndex];
+		}
+		if (Keys.Num() > 0)
+		{
+			return Keys.Last();
+		}
+		return DefaultValue;
+	}
+}
 
 #define LOCTEXT_NAMESPACE "VMDImportFactory"
 
@@ -289,7 +308,7 @@ Retry ImportOption!"
 
 		LastCreatedAnim = NULL;
 		//未実装なのでコメントアウト
-#ifdef IM4U_FACTORY_MATINEEACTOR_VMD
+#if IM4U_FACTORY_MATINEEACTOR_VMD
 		////////////////////////
 		// Import Optionを設定するslateに関しては必要ない認識。
 		//
@@ -653,7 +672,7 @@ bool UVmdFactory::ImportMorphCurveToAnimSequence(
 			check(faceKeyPtr);
 			/********************************************/
 			float timeCurve = faceKeyPtr->Frame / 30.0f;
-			if (timeCurve > DestSeq->SequenceLength)
+			if (timeCurve > DestSeq->GetPlayLength())
 			{
 				//this key frame(time) more than Target SeqLength ... 
 				break;
@@ -666,7 +685,6 @@ bool UVmdFactory::ImportMorphCurveToAnimSequence(
 		const FSmartNameMapping* Mapping = Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
 		DestSeq->RawCurveData.RefreshName(Mapping);
 
-		DestSeq->MarkRawDataAsModified();
 		/***********************************************************************************/
 		// Trace Log ( for debug message , compleat import morph of this track )
 		if (true)
@@ -712,9 +730,13 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 		UE_LOG(LogMMD4UE4_VMDFactory, Warning,
 			TEXT("ImportVMDToAnimSequence : Target MMDExtendAsset is null."));
 	}
+
+	IAnimationDataController& Controller = DestSeq->GetController();
+	const int32 TargetFrameCount = FMath::Max<int32>(vmdMotionInfo->maxFrame, 1);
+	const FFrameRate SamplingFrameRate(30, 1);
+	Controller.SetFrameRate(SamplingFrameRate, false);
+	Controller.SetNumberOfFrames(FFrameNumber(TargetFrameCount), false);
 	/********************************/
-	DestSeq->SetRawNumberOfFrame(vmdMotionInfo->maxFrame);
-	DestSeq->SequenceLength = FGenericPlatformMath::Max<float>(1.0f / 30.0f * (float)DestSeq->GetNumberOfFrames(), MINIMUM_ANIMATION_LENGTH);
 	/////////////////////////////////
 	const int32 NumBones = Skeleton->GetReferenceSkeleton().GetNum();
 #if 0 /* :UE414: 4.14からのエンジン仕様変更による対象 */
@@ -765,7 +787,8 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 			}
 			//nop
 			//フレーム分同じ値を設定する
-			for (int32 i = 0; i < DestSeq->GetNumberOfFrames(); i++)
+			const int32 NumSampledKeys = DestSeq->GetNumberOfSampledKeys();
+			for (int32 i = 0; i < NumSampledKeys; i++)
 			{
 				FTransform3f nrmTrnc;
 				nrmTrnc.SetIdentity();
@@ -793,7 +816,8 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 			//事前に各Trackに対し親Bone抜きにLocal座標で全登録予定のフレーム計算しておく（もっと良い処理があれば…検討）
 			//90度以上の軸回転が入るとクォータニオンの為か処理に誤りがあるかで余計な回転が入ってしまう。
 			//→上記により、単にZ回転（ターンモーション）で下半身と上半身の軸が物理的にありえない回転の組み合わせになる。バグ。
-			for (int32 i = 0; i < DestSeq->GetNumberOfFrames(); i++)
+			const int32 NumSampledKeysForPm = DestSeq->GetNumberOfSampledKeys();
+			for (int32 i = 0; i < NumSampledKeysForPm; i++)
 			{
 				if (i == 0)
 				{
@@ -1045,13 +1069,14 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 	TArray<FRawAnimSequenceTrack> ImportRawTrackList;
 	ImportRawTrackList.AddZeroed(NumBones);
 	GWarn->BeginSlowTask(LOCTEXT("BeginImportAnimation", "Importing Animation"), true);
-	for (int32 k = 0; k < DestSeq->GetNumberOfFrames(); k++)
+	const int32 TotalSampledKeys = DestSeq->GetNumberOfSampledKeys();
+	for (int32 k = 0; k < TotalSampledKeys; k++)
 	{
 		// update status
 		FFormatNamedArguments Args;
 		//Args.Add(TEXT("TrackName"), FText::FromName(BoneName));
 		Args.Add(TEXT("NowKey"), FText::AsNumber(k));
-		Args.Add(TEXT("TotalKey"), FText::AsNumber(DestSeq->GetNumberOfFrames()));
+		Args.Add(TEXT("TotalKey"), FText::AsNumber(TotalSampledKeys));
 		//Args.Add(TEXT("TrackIndex"), FText::AsNumber(SourceTrackIdx + 1));
 		Args.Add(TEXT("TotalTracks"), FText::AsNumber(NumBones));
 		//const FText StatusUpate = FText::Format(LOCTEXT("ImportingAnimTrackDetail", "Importing Animation Track [{TrackName}] ({TrackIndex}/{TotalTracks}) - TotalKey {TotalKey}"), Args);
@@ -1059,7 +1084,7 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 			= FText::Format(LOCTEXT("ImportingAnimTrackDetail",
 				"Importing Animation Track Key({NowKey}/{TotalKey}) - TotalTracks {TotalTracks}"),
 				Args);
-		GWarn->StatusForceUpdate(k, DestSeq->GetNumberOfFrames(), StatusUpate);
+		GWarn->StatusForceUpdate(k, TotalSampledKeys, StatusUpate);
 
 		for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
 		{
@@ -1665,15 +1690,17 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 	}
 #endif /* :UE414: 4.14のAnimationクラス仕様変更による機能制限 */
 
-	/* AddTrack */
+	Controller.OpenBracket(LOCTEXT("IM4U_ImportVMDTrack", "Importing VMD Tracks"));
+	Controller.RemoveAllBoneTracks();
 	for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
 	{
-		FName BoneName = Skeleton->GetReferenceSkeleton().GetBoneName(BoneIndex);
-
-		FRawAnimSequenceTrack &RawTrack = ImportRawTrackList[BoneIndex];
-
-		DestSeq->AddNewRawTrack(BoneName, &RawTrack);
+		const FName BoneName = Skeleton->GetReferenceSkeleton().GetBoneName(BoneIndex);
+		FRawAnimSequenceTrack& RawTrack = ImportRawTrackList[BoneIndex];
+		Controller.AddBoneTrack(BoneName, false);
+		Controller.SetBoneTrackKeys(BoneName, RawTrack.PosKeys, RawTrack.RotKeys, RawTrack.ScaleKeys, false);
 	}
+	Controller.NotifyPopulated();
+	Controller.CloseBracket();
 	GWarn->EndSlowTask();
 	return true;
 }
@@ -1853,11 +1880,21 @@ FTransform3f UVmdFactory::CalcGlbTransformFromBoneIndex(
 		//error root
 		return FTransform3f::Identity;
 	}
-	FTransform3f resultTrans(
-		DestSeq->GetRawAnimationData()[BoneIndex].RotKeys[keyIndex],
-		DestSeq->GetRawAnimationData()[BoneIndex].PosKeys[keyIndex],
-		DestSeq->GetRawAnimationData()[BoneIndex].ScaleKeys[keyIndex]
-		);
+	const IAnimationDataModel* DataModel = DestSeq->GetDataModel();
+	if (DataModel == nullptr)
+	{
+		return FTransform3f::Identity;
+	}
+	const int32 NumBoneTracks = DataModel->GetNumBoneTracks();
+	if (BoneIndex >= NumBoneTracks)
+	{
+		return FTransform3f::Identity;
+	}
+	const FBoneAnimationTrack& BoneTrack = DataModel->GetBoneTrackByIndex(BoneIndex);
+	const FQuat4f RotationKey = GetAnimationKeyValue<FQuat4f>(BoneTrack.InternalTrackData.RotKeys, keyIndex, FQuat4f::Identity);
+	const FVector3f TranslationKey = GetAnimationKeyValue<FVector3f>(BoneTrack.InternalTrackData.PosKeys, keyIndex, FVector3f::ZeroVector);
+	const FVector3f ScaleKey = GetAnimationKeyValue<FVector3f>(BoneTrack.InternalTrackData.ScaleKeys, keyIndex, FVector3f::OneVector);
+	FTransform3f resultTrans(RotationKey, TranslationKey, ScaleKey);
 	int ParentBoneIndex = Skeleton->GetReferenceSkeleton().GetParentIndex(BoneIndex);
 	if (ParentBoneIndex >= 0)
 	{

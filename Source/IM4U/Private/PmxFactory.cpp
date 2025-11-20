@@ -11,7 +11,7 @@
 //#include "FbxImporter.h"
 
 #include "Misc/FbxErrors.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/StaticMesh.h"
 
 /////////////////////////
@@ -25,7 +25,7 @@
 #include "AnimEncoding.h"
 #include "SSkeletonWidget.h"
 
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetNotifications.h"
 
 #include "ObjectTools.h"
@@ -676,7 +676,7 @@ USkeletalMesh* UPmxFactory::ImportSkeletalMesh(
 
 	if (!FbxShapeArray)
 	{
-		UObject* ExistingObject = StaticFindObjectFast(UObject::StaticClass(), InParent, *Name.ToString(), false, false, RF_PendingKill);
+		UObject* ExistingObject = StaticFindObjectFast(UObject::StaticClass(), InParent, *Name.ToString(), false, false, RF_MirroredGarbage);
 		USkeletalMesh* ExistingSkelMesh = Cast<USkeletalMesh>(ExistingObject);
 
 		if (ExistingSkelMesh)
@@ -875,7 +875,7 @@ USkeletalMesh* UPmxFactory::ImportSkeletalMesh(
 				}
 			}
 
-			SkeletalMesh->MarkPendingKill();
+			SkeletalMesh->MarkAsGarbage();
 			return NULL;
 		}
 		else if (WarningMessages.Num() > 0)
@@ -1012,8 +1012,8 @@ USkeletalMesh* UPmxFactory::ImportSkeletalMesh(
 
 	if (true /*!FbxShapeArray*/)
 	{
-		//UObject* ExistingObject = StaticFindObjectFast(UObject::StaticClass(), InParent, *Name.ToString(), false, false, RF_PendingKill);//~UE4.10
-		UObject* ExistingObject = StaticFindObjectFast(UObject::StaticClass(), InParent, *Name.ToString(), false, false, EObjectFlags::RF_NoFlags, EInternalObjectFlags::PendingKill);//UE4.11~
+		//UObject* ExistingObject = StaticFindObjectFast(UObject::StaticClass(), InParent, *Name.ToString(), false, false, RF_MirroredGarbage);//~UE4.10
+		UObject* ExistingObject = StaticFindObjectFast(UObject::StaticClass(), InParent, *Name.ToString(), false, false, EObjectFlags::RF_NoFlags, EInternalObjectFlags::Garbage);//UE4.11~
 		USkeletalMesh* ExistingSkelMesh = Cast<USkeletalMesh>(ExistingObject);
 
 		if (ExistingSkelMesh)
@@ -1278,7 +1278,7 @@ USkeletalMesh* UPmxFactory::ImportSkeletalMesh(
 				}
 			}
 
-			SkeletalMesh->MarkPendingKill();
+			SkeletalMesh->MarkAsGarbage();
 			return NULL;
 		}
 		else if (WarningMessages.Num() > 0)
