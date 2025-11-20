@@ -1,0 +1,1486 @@
+﻿// Copyright 2015 BlackMa9. All Rights Reserved.
+
+#include "PmxMaterialImport.h"
+#include "IM4UPrivatePCH.h"
+
+#include "CoreMinimal.h"
+#include "ComponentReregisterContext.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetToolsModule.h"
+
+#include "ContentBrowserModule.h"
+#include "Editor/ContentBrowser/Public/IContentBrowserSingleton.h"
+
+#include "PackageTools.h"
+
+#include "ObjectTools.h"
+
+#include "Factories/TextureFactory.h"
+#include "Factories/MaterialFactoryNew.h"
+#include "Factories/MaterialInstanceConstantFactoryNew.h"
+
+#include "Materials/MaterialExpressionTextureSample.h"
+#include "Materials/MaterialExpressionTextureCoordinate.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionConstant.h"
+#include "MaterialEditingLibrary.h"
+
+DEFINE_LOG_CATEGORY(LogCategoryPMXMaterialImport)
+
+namespace
+{
+	FContentBrowserMenuExtender_SelectedAssets ContentBrowserExtenderDelegate;
+	FDelegateHandle ContentBrowserExtenderDelegateHandle;
+
+	template <typename TExpression>
+	TExpression* CreateExpression(UMaterial* Material, const FVector2D& NodeLocation)
+	{
+		if (!Material)
+		{
+			return nullptr;
+		}
+
+		const int32 NodePosX = FMath::RoundToInt(NodeLocation.X);
+		const int32 NodePosY = FMath::RoundToInt(NodeLocation.Y);
+		UMaterialExpression* Expression = UMaterialEditingLibrary::CreateMaterialExpression(
+			Material,
+			TExpression::StaticClass(),
+			NodePosX,
+			NodePosY);
+		return Cast<TExpression>(Expression);
+	}
+
+	bool ConnectExpressions(UMaterialExpression* FromExpression, const TCHAR* FromOutputName, UMaterialExpression* ToExpression, const TCHAR* ToInputName)
+	{
+		if (!FromExpression || !ToExpression)
+		{
+			return false;
+		}
+
+		const FString FromOutput = FromOutputName ? FString(FromOutputName) : FString();
+		const FString ToInput = ToInputName ? FString(ToInputName) : FString();
+		return UMaterialEditingLibrary::ConnectMaterialExpressions(FromExpression, FromOutput, ToExpression, ToInput);
+	}
+
+	bool ConnectToMaterialProperty(UMaterialExpression* FromExpression, const TCHAR* FromOutputName, EMaterialProperty Property)
+	{
+		if (!FromExpression)
+		{
+			return false;
+		}
+
+		const FString FromOutput = FromOutputName ? FString(FromOutputName) : FString();
+		return UMaterialEditingLibrary::ConnectMaterialProperty(FromExpression, FromOutput, Property);
+	}
+
+	UMaterialExpressionTextureSample* CreateTextureSampleExpression(UMaterial* Material, const FVector2D& NodeLocation, UTexture* Texture, bool bSetupAsNormalMap)
+	{
+		UMaterialExpressionTextureSample* TextureExpression = CreateExpression<UMaterialExpressionTextureSample>(Material, NodeLocation);
+		if (TextureExpression)
+		{
+			TextureExpression->Texture = Texture;
+			TextureExpression->SamplerType = bSetupAsNormalMap ? SAMPLERTYPE_Normal : SAMPLERTYPE_Color;
+			TextureExpression->SamplerSource = SSM_Wrap_WorldGroupSettings;
+		}
+		return TextureExpression;
+	}
+}
+
+/*UPmxMaterialImport::UPmxMaterialImport(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	//SupportedClass = UMyUObjectTestCls::StaticClass();
+	bCreateNew = false;
+	////////////
+	bEditorImport = false;
+	bText = false;
+
+	InParent = 0;
+}
+*/
+void UPmxMaterialImport::AssetsCreateTextuer(
+	//UObject * InParent,
+	//EObjectFlags Flags,
+	//FFeedbackContext * Warn,
+	FString CurPath,
+	FString filePath,
+	TArray<UTexture*> &textureAssetList)
+{
+	TArray<FString> ImagePaths;
+	//FString CurPath = FPaths::GetPath(GetCurrentFilename());
+	TMap<FString, UTexture*>* ExistImages = NULL;
+	FAssetToolsModule& AssetToolsModule
+		= FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+
+	ImagePaths.AddUnique(filePath);
+
+	// texture
+	for (int i = 0; i < ImagePaths.Num(); ++i)
+	{
+		//TODO: ImageBaseDirectoryを考慮
+		FString FileName = CurPath / ImagePaths[i];
+
+		UTexture* ImportedTexture = NULL;
+		if (ExistImages && ExistImages->Contains(ImagePaths[i]))
+		{
+			ImportedTexture = ExistImages->FindChecked(ImagePaths[i]);
+		}
+
+		FString TextureName = ("T_" + FPaths::GetBaseFilename(ImagePaths[i]));
+
+		FString TexturePackageName;
+		FString BasePackageName 
+			= FPackageName::GetLongPackagePath(
+				InParent->GetOutermost()->GetName()) / TextureName;
+
+
+		FString BasePackageName_2 = PackageTools::SanitizePackageName(BasePackageName);
+
+		UTexture* ExistingTexture = NULL;
+		// First check if the asset already exists.
+		{
+			FString ObjectPath = BasePackageName_2 + TEXT(".") + TextureName;
+			ExistingTexture = LoadObject<UTexture>(NULL, *ObjectPath);
+		}
+		if (!ExistingTexture)
+		{
+		}
+		else
+		{
+			textureAssetList.Add(ExistingTexture);
+			continue;
+		}
+
+		TArray<uint8> Data;
+		if (FFileHelper::LoadFileToArray(Data, *FileName))
+		{
+#if 0
+#if 1 //defined(SS_UE4_4) || defined(SS_UE4_5)
+			UTextureFactory* TextureFact
+				= new UTextureFactory(FPostConstructInitializeProperties());
+#else
+			UTextureFactory* TextureFact 
+				= new UTextureFactory(FObjectInitializer());
+#endif
+#else
+			//From fbx texture import code
+			auto TextureFact = NewObject<UTextureFactory>();
+#endif
+			TextureFact->AddToRoot();
+			// save texture settings if texture exist
+			TextureFact->SuppressImportOverwriteDialog();
+			UPackage* TexturePackage = NULL;
+			if (ImportedTexture)
+			{
+				TexturePackage = ImportedTexture->GetOutermost();
+			}
+			else
+			{
+				AssetToolsModule.Get().CreateUniqueAssetName(
+					BasePackageName, TEXT(""), 
+					TexturePackageName, TextureName);
+				TexturePackage = CreatePackage(*TexturePackageName);
+			}
+
+			const uint8* BufferBegin = Data.GetData();
+			const uint8* BufferEnd = BufferBegin + Data.Num();
+			UTexture2D* NewTexture = (UTexture2D*)TextureFact->FactoryCreateBinary(
+				UTexture2D::StaticClass(),
+				TexturePackage,
+				FName(*TextureName),
+				RF_Standalone | RF_Public,
+				NULL,
+				*FPaths::GetExtension(ImagePaths[i]),
+				BufferBegin, 
+				BufferEnd,
+				GWarn
+				);
+			if (NewTexture)
+			{
+				if (!ImportedTexture)
+				{
+					NewTexture->MipGenSettings = TMGS_NoMipmaps;
+					NewTexture->AddressX = TA_Clamp;
+					NewTexture->AddressY = TA_Clamp;
+					NewTexture->CompressionSettings = TC_Default;
+					NewTexture->LODGroup = TEXTUREGROUP_World;
+					//Test
+					NewTexture->SRGB = 1;
+				}
+
+				FAssetRegistryModule::AssetCreated(NewTexture);
+				TexturePackage->SetDirtyFlag(true);
+
+				TextureFact->RemoveFromRoot();
+
+				ImportedTexture = NewTexture;
+
+
+				UE_LOG(LogCategoryPMXMaterialImport, Warning,
+					TEXT("PMX Import NewTexture Complete.[%s]"), *TextureName);
+
+			}
+			TextureFact->RemoveFromRoot();
+			/**/
+		}
+		/*
+		if (ImportedTexture)
+		{
+			for (int ii = 0; ii < NewProject->CellmapList.Num(); ++ii)
+			{
+				if (NewProject->CellmapList[ii].ImagePath == ImagePaths[i])
+				{
+					NewProject->CellmapList[ii].Texture = ImportedTexture;
+				}
+			}
+		}
+		*/
+		textureAssetList.Add(ImportedTexture);
+	}
+
+}
+#if 0
+void FPmxMaterialImport::AssetsCreateUnrealMaterial(
+	UObject * InParent,
+	FString MaterialName,
+	TArray<UMaterialInterface*>& OutMaterials)
+{
+	/// From @ UnFbx::FFbxImporter::CreateUnrealMaterial
+	// copy code 
+
+	FString MaterialFullName = /*ANSI_TO_TCHAR*/(("M_" + MaterialName));
+
+	if (MaterialFullName.Len() > 6)
+	{
+		int32 Offset = MaterialFullName.Find(TEXT("_SKIN"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+		if (Offset != INDEX_NONE)
+		{
+			// Chop off the material name so we are left with the number in _SKINXX
+			FString SkinXXNumber = MaterialFullName.Right(MaterialFullName.Len() - (Offset + 1)).RightChop(4);
+
+			if (SkinXXNumber.IsNumeric())
+			{
+				// remove the '_skinXX' suffix from the material name					
+				MaterialFullName = MaterialFullName.LeftChop(Offset + 1);
+			}
+		}
+	}
+
+	//	MaterialFullName = ObjectTools::SanitizeObjectName(MaterialFullName);
+
+	// Make sure we have a parent
+	if (!ensure(InParent))
+	{
+		return;
+	}
+
+	FString BasePackageName = FPackageName::GetLongPackagePath(InParent->GetOutermost()->GetName()) / MaterialFullName;
+	//BasePackageName = PackageTools::SanitizePackageName(BasePackageName);
+
+	// The material could already exist in the project
+	FName ObjectPath = *(BasePackageName + TEXT(".") + MaterialFullName);
+
+	/*if (ImportedMaterialData.IsUnique(FbxMaterial, ObjectPath))
+	{
+	UMaterialInterface* FoundMaterial = ImportedMaterialData.GetUnrealMaterial(FbxMaterial);
+	if (FoundMaterial)
+	{
+	// The material was imported from this FBX.  Reuse it
+	OutMaterials.Add(FoundMaterial);
+	return;
+	}
+	}
+	else
+	{
+	UMaterialInterface* FoundMaterial = LoadObject<UMaterialInterface>(NULL, *ObjectPath.ToString());
+	// do not override existing materials
+	if (FoundMaterial)
+	{
+	ImportedMaterialData.AddImportedMaterial(FbxMaterial, *FoundMaterial);
+	OutMaterials.Add(FoundMaterial);
+	return;
+	}
+	}*/
+
+	const FString Suffix(TEXT(""));
+	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+	FString FinalPackageName;
+	AssetToolsModule.Get().CreateUniqueAssetName(BasePackageName, Suffix, FinalPackageName, MaterialFullName);
+
+	UPackage* Package = CreatePackage(NULL, *FinalPackageName);
+
+
+	// create an unreal material asset
+	UMaterialFactoryNew* MaterialFactory = new UMaterialFactoryNew(FObjectInitializer());
+
+	UMaterial* UnrealMaterial = (UMaterial*)MaterialFactory->FactoryCreateNew(
+		UMaterial::StaticClass(), Package, *MaterialFullName, RF_Standalone | RF_Public, NULL, GWarn);
+
+	if (UnrealMaterial != NULL)
+	{
+		// Notify the asset registry
+		FAssetRegistryModule::AssetCreated(UnrealMaterial);
+
+		// Set the dirty flag so this package will get saved later
+		Package->SetDirtyFlag(true);
+
+		UE_LOG(LogCategoryPMXMaterialImport, Warning, TEXT("PMX Import NewMateriale Complete.[%s]"), *FinalPackageName);
+
+	}
+}
+#endif
+
+//-----
+UTexture* UPmxMaterialImport::ImportTexture(
+	//FbxFileTexture* FbxTexture, 
+	FString InTextureFileName,
+	bool bSetupAsNormalMap
+	)
+{
+
+	// create an unreal texture asset
+	UTexture* UnrealTexture = NULL;
+	FString Filename1 = InTextureFileName;// ANSI_TO_TCHAR(FbxTexture->GetFileName());
+	FString Extension = FPaths::GetExtension(Filename1).ToLower();
+	// name the texture with file name
+	FString TextureName = FPaths::GetBaseFilename(Filename1);
+
+	TextureName = ObjectTools::SanitizeObjectName(TextureName);
+
+	// set where to place the textures
+	FString BasePackageName
+		= FPackageName::GetLongPackagePath(InParent->GetOutermost()->GetName()) / TextureName;
+	BasePackageName = PackageTools::SanitizePackageName(BasePackageName);
+
+	UTexture* ExistingTexture = NULL;
+	UPackage* TexturePackage = NULL;
+	// First check if the asset already exists.
+	{
+		FString ObjectPath = BasePackageName + TEXT(".") + TextureName;
+		ExistingTexture = LoadObject<UTexture>(NULL, *ObjectPath);
+	}
+
+
+	if (!ExistingTexture)
+	{
+		const FString Suffix(TEXT(""));
+
+		FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+		FString FinalPackageName;
+		AssetToolsModule.Get().CreateUniqueAssetName(BasePackageName, Suffix, FinalPackageName, TextureName);
+
+		TexturePackage = CreatePackage(*FinalPackageName);
+	}
+	else
+	{
+		TexturePackage = ExistingTexture->GetOutermost();
+
+		return ExistingTexture;
+	}
+
+
+	// try opening from absolute path
+	FString Filename = Filename1;
+	TArray<uint8> DataBinary;
+	if (!FFileHelper::LoadFileToArray(DataBinary, *Filename))
+	{
+#if 0 //test
+		// try fbx file base path + relative path
+		FString Filename2 = FileBasePath / ANSI_TO_TCHAR(FbxTexture->GetRelativeFileName());
+		Filename = Filename2;
+		if (!FFileHelper::LoadFileToArray(DataBinary, *Filename))
+		{
+			// try fbx file base path + texture file name (no path)
+			FString Filename3 = ANSI_TO_TCHAR(FbxTexture->GetRelativeFileName());
+			FString FileOnly = FPaths::GetCleanFilename(Filename3);
+			Filename3 = FileBasePath / FileOnly;
+			Filename = Filename3;
+			if (!FFileHelper::LoadFileToArray(DataBinary, *Filename))
+			{
+				UE_LOG(LogFbxMaterialImport, Warning, TEXT("Unable to find TEXTure file %s. Tried:\n - %s\n - %s\n - %s"), *FileOnly, *Filename1, *Filename2, *Filename3);
+			}
+		}
+#endif
+	}
+	if (DataBinary.Num()>0)
+	{
+		UE_LOG(LogCategoryPMXMaterialImport, Verbose, 
+			TEXT("Loading texture file %s"), *Filename);
+		const uint8* PtrTexture = DataBinary.GetData();
+		auto TextureFact = NewObject<UTextureFactory>();
+		TextureFact->AddToRoot();
+
+		// save texture settings if texture exist
+		TextureFact->SuppressImportOverwriteDialog();
+		const TCHAR* TextureType = *Extension;
+
+		// Unless the normal map setting is used during import, 
+		//	the user has to manually hit "reimport" then "recompress now" button
+		if (bSetupAsNormalMap)
+		{
+			if (!ExistingTexture)
+			{
+				TextureFact->LODGroup = TEXTUREGROUP_WorldNormalMap;
+				TextureFact->CompressionSettings = TC_Normalmap;
+			}
+			else
+			{
+				UE_LOG(LogCategoryPMXMaterialImport, Warning,
+					TEXT("Manual texture reimport and recompression may be needed for %s"), *TextureName);
+			}
+		}
+
+		UnrealTexture = (UTexture*)TextureFact->FactoryCreateBinary(
+			UTexture2D::StaticClass(), TexturePackage, *TextureName,
+			RF_Standalone | RF_Public, NULL, TextureType,
+			PtrTexture, PtrTexture + DataBinary.Num(), GWarn);
+
+		if (UnrealTexture != NULL)
+		{
+			// Notify the asset registry
+			FAssetRegistryModule::AssetCreated(UnrealTexture);
+
+			// Set the dirty flag so this package will get saved later
+			TexturePackage->SetDirtyFlag(true);
+		}
+		TextureFact->RemoveFromRoot();
+	}
+
+	return UnrealTexture;
+}
+
+
+//--------------------------------------------------------------------
+//
+//-------------------------------------------------------------------------
+bool UPmxMaterialImport::CreateAndLinkExpressionForMaterialProperty(
+	MMD4UE4::PMX_MATERIAL& PmxMaterial,
+	UMaterial* UnrealMaterial,
+	bool bSetupAsNormalMap,
+	const FVector2D& Location,
+	TArray<UTexture*>& textureAssetList)
+{
+	if (!UnrealMaterial)
+	{
+		return false;
+	}
+
+	const int32 TextureIndex = PmxMaterial.TextureIndex;
+	if (!textureAssetList.IsValidIndex(TextureIndex))
+	{
+		return false;
+	}
+
+	UTexture* UnrealTexture = textureAssetList[TextureIndex];
+	if (!UnrealTexture)
+	{
+		return false;
+	}
+
+	UnrealMaterial->BlendMode = BLEND_Masked;
+
+	UMaterialExpressionTextureSample* TextureExpression = CreateTextureSampleExpression(
+		UnrealMaterial,
+		Location + FVector2D(-260.0f, 0.0f),
+		UnrealTexture,
+		bSetupAsNormalMap);
+	UMaterialExpressionMultiply* MultiplyTextureAndAlpha = CreateExpression<UMaterialExpressionMultiply>(
+		UnrealMaterial,
+		Location);
+	UMaterialExpressionMultiply* MultiplyWithDiffuse = CreateExpression<UMaterialExpressionMultiply>(
+		UnrealMaterial,
+		Location + FVector2D(0.0f, 200.0f));
+	UMaterialExpressionVectorParameter* DiffuseParameter = CreateExpression<UMaterialExpressionVectorParameter>(
+		UnrealMaterial,
+		Location + FVector2D(-260.0f, 280.0f));
+
+	if (!TextureExpression || !MultiplyTextureAndAlpha || !MultiplyWithDiffuse || !DiffuseParameter)
+	{
+		return false;
+	}
+
+	DiffuseParameter->SetEditableName(TEXT("DiffuseColor"));
+	DiffuseParameter->DefaultValue = FLinearColor(
+		PmxMaterial.Diffuse[0],
+		PmxMaterial.Diffuse[1],
+		PmxMaterial.Diffuse[2],
+		PmxMaterial.Diffuse[3]);
+
+	ConnectExpressions(TextureExpression, TEXT("RGB"), MultiplyTextureAndAlpha, TEXT("A"));
+	ConnectExpressions(TextureExpression, TEXT("A"), MultiplyTextureAndAlpha, TEXT("B"));
+	ConnectExpressions(MultiplyTextureAndAlpha, TEXT(""), MultiplyWithDiffuse, TEXT("B"));
+	ConnectExpressions(DiffuseParameter, TEXT(""), MultiplyWithDiffuse, TEXT("A"));
+
+	ConnectToMaterialProperty(MultiplyWithDiffuse, TEXT(""), EMaterialProperty::MP_BaseColor);
+	ConnectToMaterialProperty(TextureExpression, TEXT("A"), EMaterialProperty::MP_OpacityMask);
+
+	return true;
+}
+//-------------------------------------------------------------------------
+//
+//-------------------------------------------------------------------------
+void UPmxMaterialImport::FixupMaterial(
+	MMD4UE4::PMX_MATERIAL& PmxMaterial,
+	UMaterial* UnrealMaterial
+	)
+{
+	if (!UnrealMaterial)
+	{
+		return;
+	}
+
+	if (!UMaterialEditingLibrary::GetMaterialPropertyInputNode(UnrealMaterial, EMaterialProperty::MP_BaseColor))
+	{
+		UMaterialExpressionVectorParameter* DiffuseExpression = CreateExpression<UMaterialExpressionVectorParameter>(
+			UnrealMaterial,
+			FVector2D(-500.0f, 0.0f));
+		if (DiffuseExpression)
+		{
+			UnrealMaterial->BlendMode = BLEND_Masked;
+			DiffuseExpression->SetEditableName(TEXT("DiffuseColor"));
+			DiffuseExpression->DefaultValue = FLinearColor(
+				PmxMaterial.Diffuse[0],
+				PmxMaterial.Diffuse[1],
+				PmxMaterial.Diffuse[2],
+				PmxMaterial.Diffuse[3]);
+
+			ConnectToMaterialProperty(DiffuseExpression, TEXT(""), EMaterialProperty::MP_BaseColor);
+			ConnectToMaterialProperty(DiffuseExpression, TEXT("A"), EMaterialProperty::MP_OpacityMask);
+		}
+	}
+
+	if (!UMaterialEditingLibrary::GetMaterialPropertyInputNode(UnrealMaterial, EMaterialProperty::MP_AmbientOcclusion))
+	{
+		UMaterialExpressionVectorParameter* AmbientExpression = CreateExpression<UMaterialExpressionVectorParameter>(
+			UnrealMaterial,
+			FVector2D(-500.0f, 400.0f));
+		if (AmbientExpression)
+		{
+			AmbientExpression->SetEditableName(TEXT("AmbientColor"));
+			AmbientExpression->DefaultValue = FLinearColor(
+				PmxMaterial.Ambient[0],
+				PmxMaterial.Ambient[1],
+				PmxMaterial.Ambient[2],
+				1.0f);
+
+			ConnectToMaterialProperty(AmbientExpression, TEXT(""), EMaterialProperty::MP_AmbientOcclusion);
+		}
+	}
+
+	UnrealMaterial->TwoSided = PmxMaterial.CullingOff;
+}
+
+void UPmxMaterialImport::CreateUnrealMaterial(
+	FString ParentObjName,
+	//UObject * InParent,
+	MMD4UE4::PMX_MATERIAL& PmxMaterial,
+	bool bCreateMaterialInstMode,
+	bool bMaterialUnlit,
+	TArray<UMaterialInterface*>& OutMaterials,
+	TArray<UTexture*> &textureAssetList
+)
+{
+	FString MaterialFullName = "M_" + PmxMaterial.Name;// ANSI_TO_TCHAR(MakeName(PmxMaterial.Name));
+	//禁止文字を削除する(もし材質名に禁止文字が含まれていた場合のフェイルセーフ)
+	MaterialFullName = ObjectTools::SanitizeObjectName(MaterialFullName);
+
+	//禁止文字を削除する(もしモデル名に禁止文字が含まれていた場合のフェイルセーフ)
+	ParentObjName = ObjectTools::SanitizeObjectName(ParentObjName);
+
+	if (false == bCreateMaterialInstMode)
+	{
+		if (MaterialFullName.Len() > 6)
+		{
+			int32 Offset = MaterialFullName.Find(TEXT("_SKIN"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+			if (Offset != INDEX_NONE)
+			{
+				// Chop off the material name so we are left with the number in _SKINXX
+				FString SkinXXNumber = MaterialFullName.Right(MaterialFullName.Len() - (Offset + 1)).RightChop(4);
+
+				if (SkinXXNumber.IsNumeric())
+				{
+					// remove the '_skinXX' suffix from the material name					
+					MaterialFullName = MaterialFullName.LeftChop(Offset + 1);
+				}
+			}
+		}
+
+		//MaterialFullName = ObjectTools::SanitizeObjectName(MaterialFullName);
+
+		// Make sure we have a parent
+		if (!ensure(InParent))
+		{
+			return;
+		}
+
+		FString BasePackageName = FPackageName::GetLongPackagePath(InParent->GetOutermost()->GetName()) / MaterialFullName;
+		BasePackageName = PackageTools::SanitizePackageName(BasePackageName);
+
+		// The material could already exist in the project
+		FName ObjectPath = *(BasePackageName + TEXT(".") + MaterialFullName);
+
+		/*
+		if( ImportedMaterialData.IsUnique( PmxMaterial, ObjectPath ) )
+		{
+			UMaterialInterface* FoundMaterial = ImportedMaterialData.GetUnrealMaterial( PmxMaterial );
+			if (FoundMaterial)
+			{
+				// The material was imported from this FBX.  Reuse it
+				OutMaterials.Add(FoundMaterial);
+				return;
+			}
+		}
+		else*/
+		{
+			UMaterialInterface* FoundMaterial = LoadObject<UMaterialInterface>(NULL, *ObjectPath.ToString());
+			// do not override existing materials
+			if (FoundMaterial)
+			{
+				//ImportedMaterialData.AddImportedMaterial( PmxMaterial, *FoundMaterial );
+				OutMaterials.Add(FoundMaterial);
+				return;
+			}
+		}
+
+
+		const FString Suffix(TEXT(""));
+		FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+		FString FinalPackageName;
+		AssetToolsModule.Get().CreateUniqueAssetName(BasePackageName, Suffix, FinalPackageName, MaterialFullName);
+
+		UPackage* Package = CreatePackage(*FinalPackageName);
+
+
+		// create an unreal material asset
+		auto MaterialFactory = NewObject<UMaterialFactoryNew>();
+
+		UMaterial* UnrealMaterial = (UMaterial*)MaterialFactory->FactoryCreateNew(
+			UMaterial::StaticClass(), Package, *MaterialFullName, RF_Standalone | RF_Public, NULL, GWarn);
+
+		if (UnrealMaterial != NULL)
+		{
+			// Notify the asset registry
+			FAssetRegistryModule::AssetCreated(UnrealMaterial);
+
+			// Set the dirty flag so this package will get saved later
+			Package->SetDirtyFlag(true);
+		}
+
+
+		// textures and properties
+		if (
+			CreateAndLinkExpressionForMaterialProperty_ForMmdAutoluminus(
+				PmxMaterial,
+				UnrealMaterial,
+				FVector2D(240, -320),
+				textureAssetList
+			) == true)
+		{
+		}
+		else if (
+			CreateAndLinkExpressionForMaterialProperty(
+				PmxMaterial,
+				UnrealMaterial,
+				false,
+				FVector2D(240, -320),
+				textureAssetList
+			) == true)
+		{
+
+		}
+		else
+		{
+
+		}
+		/*
+		CreateAndLinkExpressionForMaterialProperty( PmxMaterial, UnrealMaterial, FbxSurfaceMaterial::sDiffuse, UnrealMaterial->BaseColor, false, UVSets, FVector2D(240,-320) );
+		CreateAndLinkExpressionForMaterialProperty( PmxMaterial, UnrealMaterial, FbxSurfaceMaterial::sEmissive, UnrealMaterial->EmissiveColor, false, UVSets, FVector2D(240,-64) );
+		CreateAndLinkExpressionForMaterialProperty( PmxMaterial, UnrealMaterial, FbxSurfaceMaterial::sSpecular, UnrealMaterial->Specular, false, UVSets, FVector2D(240, -128) );
+		//CreateAndLinkExpressionForMaterialProperty( *FbxMaterial, UnrealMaterial, FbxSurfaceMaterial::sSpecularFactor, UnrealMaterial->SpecularColor, false, UVSets); // SpecularFactor modulates the SpecularColor value if there's one
+		//CreateAndLinkExpressionForMaterialProperty( *FbxMaterial, UnrealMaterial, FbxSurfaceMaterial::sShininess, UnrealMaterial->SpecularPower, false, UVSets);
+		if (!CreateAndLinkExpressionForMaterialProperty( PmxMaterial, UnrealMaterial, FbxSurfaceMaterial::sNormalMap, UnrealMaterial->Normal, true, UVSets, FVector2D(240,256) ) )
+		{
+		CreateAndLinkExpressionForMaterialProperty( PmxMaterial, UnrealMaterial, FbxSurfaceMaterial::sBump, UnrealMaterial->Normal, true, UVSets, FVector2D(240,256) ); // no bump in unreal, use as normal map
+		}
+		//CreateAndLinkExpressionForMaterialProperty( *FbxMaterial, UnrealMaterial, KFbxSurfaceMaterial::sTransparentColor, UnrealMaterial->Opacity, false, UVSets);
+		//CreateAndLinkExpressionForMaterialProperty( *FbxMaterial, UnrealMaterial, KFbxSurfaceMaterial::sTransparencyFactor, UnrealMaterial->OpacityMask, false, UVSets);
+		*/
+		FixupMaterial(PmxMaterial, UnrealMaterial); // add random diffuse if none exists
+		UMaterialEditingLibrary::LayoutMaterialExpressions(UnrealMaterial);
+
+		// compile shaders for PC (from UPrecompileShadersCommandlet::ProcessMaterial
+		// and FMaterialEditor::UpdateOriginalMaterial)
+
+		// make sure that any static meshes, etc using this material will stop using the FMaterialResource of the original 
+		// material, and will use the new FMaterialResource created when we make a new UMaterial in place
+		FGlobalComponentReregisterContext RecreateComponents;
+
+		// let the material update itself if necessary
+		UnrealMaterial->PreEditChange(NULL);
+		UnrealMaterial->PostEditChange();
+
+		//ImportedMaterialData.AddImportedMaterial( FbxMaterial, *UnrealMaterial );
+
+		OutMaterials.Add(UnrealMaterial);
+	}
+	else
+	{
+		/*
+		 * 以下、IM4Uプラグイン付属のBaseMaterialからDuplicateし、MaterialInstanceを作成するモード
+		 */
+
+		/* 生成するMI */
+		UMaterialInterface* UnrealMaterial_MI = nullptr;
+		/* 生成処理：優先順位で実施*/
+		do
+		{
+			//Unlit Material
+			if (bMaterialUnlit)
+			{
+				/* MMD AutoLuminous 疑似設定 */
+				if (PmxMaterial.SpecularPower > 100) //auto luminus
+				{
+					UnrealMaterial_MI = this->CreateMaterialInst_Luminous_Unlit(ParentObjName, PmxMaterial, MaterialFullName, textureAssetList);
+					if (UnrealMaterial_MI)
+					{
+						UE_LOG(LogCategoryPMXMaterialImport, Log, TEXT("[%s]:Material MIC -Luminous Unlit- OK"), *(FString(__FUNCTION__)));
+						break;
+					}
+				}
+
+				/* MMD 通常材質設定 */
+				UnrealMaterial_MI = this->CreateMaterialInst_Masked_Unlit(ParentObjName, PmxMaterial, MaterialFullName, textureAssetList);
+				if (UnrealMaterial_MI)
+				{
+					UE_LOG(LogCategoryPMXMaterialImport, Log, TEXT("[%s]:Material MIC -Masked Unlit- OK"), *(FString(__FUNCTION__)));
+					break;
+				}
+
+			}
+			else
+			{
+				/* MMD AutoLuminous 疑似設定 */
+				if (PmxMaterial.SpecularPower > 100) //auto luminus
+				{
+					UnrealMaterial_MI = this->CreateMaterialInst_Luminous(ParentObjName, PmxMaterial, MaterialFullName, textureAssetList);
+					if (UnrealMaterial_MI)
+					{
+						UE_LOG(LogCategoryPMXMaterialImport, Log, TEXT("[%s]:Material MIC -Luminous- OK"), *(FString(__FUNCTION__)));
+						break;
+					}
+				}
+
+				/* MMD 通常材質設定 */
+				UnrealMaterial_MI = this->CreateMaterialInst_Masked(ParentObjName, PmxMaterial, MaterialFullName, textureAssetList);
+				if (UnrealMaterial_MI)
+				{
+					UE_LOG(LogCategoryPMXMaterialImport, Log, TEXT("[%s]:Material MIC -Masked- OK"), *(FString(__FUNCTION__)));
+					break;
+				}
+			}
+
+			//異常ケース：生成失敗
+			{
+				//OutMaterials.Add(UnrealMaterial);
+				UE_LOG(LogCategoryPMXMaterialImport, Error, TEXT("[%s]:Material MIC Null.Error[%s]:[%s]"), *(FString(__FUNCTION__)), *ParentObjName, *MaterialFullName);
+				return;
+			}
+		} while (false);
+		
+		OutMaterials.Add(UnrealMaterial_MI);
+	}
+}
+
+//--------------------------------------------------------------------
+//
+//-------------------------------------------------------------------------
+bool UPmxMaterialImport::CreateAndLinkExpressionForMaterialProperty_ForMmdAutoluminus(
+	MMD4UE4::PMX_MATERIAL& PmxMaterial,
+	UMaterial* UnrealMaterial,
+	const FVector2D& Location,
+	TArray<UTexture*>& textureAssetList)
+{
+	if (!UnrealMaterial)
+	{
+		return false;
+	}
+
+	if (PmxMaterial.SpecularPower <= 100.0f)
+	{
+		return false;
+	}
+
+	const int32 TextureIndex = PmxMaterial.TextureIndex;
+	if (!textureAssetList.IsValidIndex(TextureIndex))
+	{
+		return false;
+	}
+
+	UTexture* UnrealTexture = textureAssetList[TextureIndex];
+	if (!UnrealTexture)
+	{
+		return false;
+	}
+
+	UnrealMaterial->BlendMode = BLEND_Additive;
+
+	UMaterialExpressionTextureSample* TextureExpression = CreateTextureSampleExpression(
+		UnrealMaterial,
+		Location + FVector2D(-260.0f, 0.0f),
+		UnrealTexture,
+		false);
+	UMaterialExpressionMultiply* MultiplyTextureAndAlpha = CreateExpression<UMaterialExpressionMultiply>(UnrealMaterial, Location);
+	UMaterialExpressionMultiply* MultiplyDiffuse = CreateExpression<UMaterialExpressionMultiply>(UnrealMaterial, Location + FVector2D(0.0f, 200.0f));
+	UMaterialExpressionMultiply* MultiplyEmissive = CreateExpression<UMaterialExpressionMultiply>(UnrealMaterial, Location + FVector2D(0.0f, 400.0f));
+	UMaterialExpressionVectorParameter* DiffuseParameter = CreateExpression<UMaterialExpressionVectorParameter>(UnrealMaterial, Location + FVector2D(-260.0f, 300.0f));
+	UMaterialExpressionConstant* SpecularConstant = CreateExpression<UMaterialExpressionConstant>(UnrealMaterial, Location + FVector2D(-260.0f, 520.0f));
+
+	if (!TextureExpression || !MultiplyTextureAndAlpha || !MultiplyDiffuse || !MultiplyEmissive || !DiffuseParameter || !SpecularConstant)
+	{
+		return false;
+	}
+
+	DiffuseParameter->SetEditableName(TEXT("DiffuseColor"));
+	DiffuseParameter->DefaultValue = FLinearColor(
+		PmxMaterial.Diffuse[0],
+		PmxMaterial.Diffuse[1],
+		PmxMaterial.Diffuse[2],
+		PmxMaterial.Diffuse[3]);
+
+	SpecularConstant->R = FMath::Max(0.0f, PmxMaterial.SpecularPower - 100.0f);
+
+	ConnectExpressions(TextureExpression, TEXT("RGB"), MultiplyTextureAndAlpha, TEXT("A"));
+	ConnectExpressions(TextureExpression, TEXT("A"), MultiplyTextureAndAlpha, TEXT("B"));
+	ConnectToMaterialProperty(MultiplyTextureAndAlpha, TEXT(""), EMaterialProperty::MP_BaseColor);
+
+	ConnectExpressions(DiffuseParameter, TEXT(""), MultiplyDiffuse, TEXT("A"));
+	ConnectExpressions(TextureExpression, TEXT("A"), MultiplyDiffuse, TEXT("B"));
+	ConnectExpressions(MultiplyDiffuse, TEXT(""), MultiplyEmissive, TEXT("A"));
+	ConnectExpressions(SpecularConstant, TEXT(""), MultiplyEmissive, TEXT("B"));
+
+	ConnectToMaterialProperty(TextureExpression, TEXT("A"), EMaterialProperty::MP_OpacityMask);
+	ConnectToMaterialProperty(MultiplyEmissive, TEXT(""), EMaterialProperty::MP_EmissiveColor);
+
+	return true;
+}
+
+
+//--------------------------------------------------------------------
+//
+//-------------------------------------------------------------------------
+UMaterialInterface * UPmxMaterialImport::DuplicateBaseMaterial(
+	FString ParentObjName, 
+	EDuplicateBaseMatTypeIndex targetMatIndex)
+{
+
+	FAssetRegistryModule&  AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+	FAssetToolsModule&     AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+
+	FString DupAssetBaseName;
+
+	if (EDuplicateBaseMatTypeIndex::E_DupBaseMat_Typ_Normal == targetMatIndex)
+	{
+		DupAssetBaseName = D_IM4U_MMDBaseMat_Path_Normal;
+	}
+	else if (EDuplicateBaseMatTypeIndex::E_DupBaseMat_Typ_Luminous == targetMatIndex)
+	{
+		DupAssetBaseName = D_IM4U_MMDBaseMat_Path_Luminou;
+	}
+	else if (EDuplicateBaseMatTypeIndex::E_DupBaseMat_Typ_Unlit_Normal == targetMatIndex)
+	{
+		DupAssetBaseName = D_IM4U_MMDBaseMat_Path_Unlit_Normal;
+	}
+	else if (EDuplicateBaseMatTypeIndex::E_DupBaseMat_Typ_Unlit_Luminous == targetMatIndex)
+	{
+		DupAssetBaseName = D_IM4U_MMDBaseMat_Path_Unlit_Luminou;
+	}
+	else
+	{
+		UE_LOG(LogCategoryPMXMaterialImport, Error, TEXT("[%s]::BaseMaterial Kind Not Found... "), *(FString(__FUNCTION__)));
+		return nullptr;
+	}
+
+	// ベースマテリアルの複製元を取得 
+	UMaterial* BaseMatOriginal = nullptr;
+	
+	//FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FName(TEXT(*DupAssetBaseName)));
+	FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FName(*DupAssetBaseName));
+	BaseMatOriginal = Cast<UMaterial>(AssetData.GetAsset());
+	//check(BaseMatOriginal);
+	if (nullptr == BaseMatOriginal)
+	{
+		UE_LOG(LogCategoryPMXMaterialImport, Error, TEXT("[%s]:BaseMaterial Not Found... Path[%s]"), *(FString(__FUNCTION__)), *DupAssetBaseName);
+		return nullptr;
+	}
+
+	TArray<UObject*> ObjectsToSync;
+
+	// ベースマテリアルを複製 
+	FString TargetPathName = FPackageName::GetLongPackagePath(InParent->GetOutermost()->GetName());
+	UMaterial* BaseMat = nullptr;
+	FString BaseMatSimpleName;
+	{
+		BaseMatSimpleName = BaseMatOriginal->GetName().Replace(TEXT("M_MMD_MatBase_"), TEXT(""), ESearchCase::CaseSensitive);
+		FString BaseMatName = FString::Printf(TEXT("M_%s_Base_%s"),*ParentObjName, *BaseMatSimpleName);
+
+		// The material could already exist in the project
+		FName ObjectPath = *(TargetPathName / BaseMatName + TEXT(".") + BaseMatName);
+		// Existing check
+		UMaterialInterface* FoundMaterial = LoadObject<UMaterialInterface>(NULL, *ObjectPath.ToString());
+		// do not override existing materials
+		if (FoundMaterial)
+		{
+
+			if (Cast<UMaterial>(FoundMaterial))
+			{
+				/* すでに同じ名前のMaterial Assetが存在したので */
+
+				UE_LOG(LogCategoryPMXMaterialImport, Log, TEXT("[%s]:Existing Material. can't Duplicate. Path[%s]"), *(FString(__FUNCTION__)), *ObjectPath.ToString());
+				return FoundMaterial;
+			}
+			else
+			{
+				/* 同じAssetNameの別種別が存在しているのでNG */
+
+				UE_LOG(LogCategoryPMXMaterialImport, Error, TEXT("[%s]:Existing Material. can't Duplicate. and Not Mat-Assets. Path[%s]"), *(FString(__FUNCTION__)), *ObjectPath.ToString());
+				return nullptr;
+			}
+		}
+
+		UObject* DuplicatedObject = AssetToolsModule.Get().DuplicateAsset(
+			BaseMatName,
+			TargetPathName,
+			BaseMatOriginal
+		);
+		BaseMat = Cast<UMaterial>(DuplicatedObject);
+		if (nullptr == BaseMat)
+		{
+			UE_LOG(LogCategoryPMXMaterialImport, Error, TEXT("[%s]:Material can't Duplicate. Path[%s]"), *(FString(__FUNCTION__)), *ObjectPath.ToString());
+			return nullptr;
+			//continue;
+		}
+	}
+
+	if (0 < ObjectsToSync.Num())
+	{
+		ContentBrowserModule.Get().SyncBrowserToAssets(ObjectsToSync, true);
+	}
+	return BaseMat;
+}
+//-------------------------------------------------------------------------
+// Create Material Instance
+//-------------------------------------------------------------------------
+UMaterialInterface* UPmxMaterialImport::CreateMaterialInst(
+	FString ParentObjName,
+	FString TargetMaterialName,
+	UMaterialInterface* ParentMaterial)
+{
+	if ((nullptr == ParentMaterial) )
+	{
+		UE_LOG(LogCategoryPMXMaterialImport, Error, TEXT("[%s]:Parameter nullptr. New MIC Create NG.[%s]"), *(FString(__FUNCTION__)), *TargetMaterialName);
+		return nullptr;
+	}
+
+	FAssetToolsModule& AssetToolsModule =
+		FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+
+
+	// 新MIC名 
+	FString NewMICName = FString::Printf( TEXT("MI_%s"), *TargetMaterialName );
+
+	FString TargetPathName = FPackageName::GetLongPackagePath(InParent->GetOutermost()->GetName())/ NewMICName;
+
+	// The material could already exist in the project
+	FName ObjectPath = *(TargetPathName + TEXT(".") + NewMICName);
+	// Existing check
+	UMaterialInterface* FoundMaterial = LoadObject<UMaterialInterface>(NULL, *ObjectPath.ToString());
+	// do not override existing materials
+	if (FoundMaterial)
+	{
+		if (Cast<UMaterialInstanceConstant>(FoundMaterial))
+		{
+			/* すでに同じ名前のMaterial Assetが存在したので */
+			// てか、普通に再利用でいいのか？
+			UE_LOG(LogCategoryPMXMaterialImport, Log, TEXT("[%s]:Existing Material MIC. can't Duplicate. Path[%s]"), *(FString(__FUNCTION__)), *ObjectPath.ToString());
+			return FoundMaterial;
+		}
+		else
+		{
+			/* 同じAssetNameの別種別が存在しているのでNG */
+
+			UE_LOG(LogCategoryPMXMaterialImport, Error, TEXT("[%s]:Existing Material MIC. can't Duplicate. and Not Mat-Assets. Path[%s]"), *(FString(__FUNCTION__)), *ObjectPath.ToString());
+			return nullptr;
+		}
+	}
+
+	// 新MIC作成 
+	UMaterialInstanceConstant* NewMIC = nullptr;
+	{
+		UMaterialInstanceConstantFactoryNew* Factory =
+			NewObject<UMaterialInstanceConstantFactoryNew>();
+		Factory->InitialParent = ParentMaterial;
+#if 0	//簡易版、これでもいいのではないか？
+		UObject* NewAsset = AssetToolsModule.Get().CreateAsset(
+			NewMICName,
+			TargetPathName,
+			UMaterialInstanceConstant::StaticClass(),
+			Factory
+		);
+
+#else	//お試しSetDirtyFlagに揃えるパターン
+		const FString Suffix(TEXT(""));
+		FString FinalPackageName;
+		AssetToolsModule.Get().CreateUniqueAssetName(TargetPathName, Suffix, FinalPackageName, NewMICName);
+
+		UPackage* Package = CreatePackage(*FinalPackageName);
+		UObject* NewAsset = Factory->FactoryCreateNew(
+			UMaterialInstanceConstant::StaticClass(), Package, *NewMICName, RF_Standalone | RF_Public, NULL, GWarn);
+
+		if (Cast<UMaterialInstanceConstant>(NewAsset))
+		{
+			// Notify the asset registry
+			FAssetRegistryModule::AssetCreated(NewAsset);
+
+			// Set the dirty flag so this package will get saved later
+			Package->SetDirtyFlag(true);
+		}
+#endif
+		NewMIC = Cast<UMaterialInstanceConstant>(NewAsset);
+	}
+	if (nullptr == NewMIC)
+	{
+		UE_LOG(LogCategoryPMXMaterialImport, Error, TEXT("[%s]:Material Instance Asset Create NG.[%s][%s]"), *(FString(__FUNCTION__)),*TargetPathName, *NewMICName);
+		return nullptr;
+	}
+
+	return NewMIC;
+}
+
+//--------------------------------------------------------------------
+// Create Material Inst. for Masked Mat
+//-------------------------------------------------------------------------
+UMaterialInterface* UPmxMaterialImport::CreateMaterialInst_Masked(
+	FString ParentObjName,
+	MMD4UE4::PMX_MATERIAL & PmxMaterial,
+	FString MaterialFullName,
+	TArray<UTexture*>& textureAssetList )
+{
+	UMaterialInterface * UnrealMaterial = nullptr;
+
+	UMaterialInterface * ParentMaterial = this->DuplicateBaseMaterial(ParentObjName, E_DupBaseMat_Typ_Normal);
+	if (nullptr == ParentMaterial)
+	{
+		UE_LOG(LogCategoryPMXMaterialImport, Error, TEXT("[%s]:Parent Material NULL:Path[%s]"), *(FString(__FUNCTION__)),*ParentObjName);
+
+		return nullptr;
+	}
+	
+	UnrealMaterial = CreateMaterialInst(ParentObjName, MaterialFullName, ParentMaterial);
+
+	UMaterialInstanceConstant *pUMIC = nullptr;
+	pUMIC = Cast<UMaterialInstanceConstant>(UnrealMaterial);
+	if (nullptr == pUMIC)
+	{
+		UE_LOG(LogCategoryPMXMaterialImport, Error, TEXT("[%s]:Material NULL"), *(FString(__FUNCTION__)));
+
+		return nullptr;
+	}
+
+	//Set Param
+	FStaticParameterSet StaticParams;
+	// 新MICへテクスチャ設定 
+	UTexture* ColorTex = nullptr;
+	int32 TextureCount = PmxMaterial.TextureIndex;
+	//範囲内
+	if ( (0 <= TextureCount)  && (TextureCount < textureAssetList.Num()) )
+	{
+		ColorTex = textureAssetList[TextureCount];
+	}
+
+
+	if(nullptr != ColorTex)
+	{
+		pUMIC->SetTextureParameterValueEditorOnly(
+			FName(TEXT(D_IM4U_MatInst_Name_BaseTexture)),
+			ColorTex
+		);
+
+		// ColorTex有効の場合はStaticSwitchでONにする 
+		FStaticSwitchParameter Param;
+		Param.ParameterInfo.Name = FName(D_IM4U_MatInst_Name_isTextureEnable);
+		Param.Value = true;
+		Param.bOverride = true;
+		StaticParams.StaticSwitchParameters.Add(Param);
+
+		UE_LOG(LogCategoryPMXMaterialImport, Log, TEXT("[%s]:MIC Texure mode enable "), *(FString(__FUNCTION__)));
+	}
+
+
+	//Diffuse Color
+	{
+		pUMIC->SetVectorParameterValueEditorOnly(
+			FName(TEXT(D_IM4U_MatInst_Name_DiffuseColor)),
+			FLinearColor(
+				PmxMaterial.Diffuse[0],
+				PmxMaterial.Diffuse[1],
+				PmxMaterial.Diffuse[2],
+				PmxMaterial.Diffuse[3])
+		);
+	}
+	//Ambient Color
+	{
+		pUMIC->SetVectorParameterValueEditorOnly(
+			FName(TEXT(D_IM4U_MatInst_Name_AmbientColor)),
+			FLinearColor(
+				PmxMaterial.Ambient[0],
+				PmxMaterial.Ambient[1],
+				PmxMaterial.Ambient[2])
+		);
+	}
+
+	if(pUMIC->BasePropertyOverrides.TwoSided != PmxMaterial.CullingOff)
+	{
+		// TowSide有効の場合はONにする 
+		pUMIC->BasePropertyOverrides.TwoSided = PmxMaterial.CullingOff;
+		pUMIC->BasePropertyOverrides.bOverride_TwoSided = true;
+		pUMIC->UpdateOverridableBaseProperties(); // OverrideParam Update
+		UE_LOG(LogCategoryPMXMaterialImport, Log, TEXT("[%s]:MIC TwoSided mode enable "), *(FString(__FUNCTION__)));
+	}
+
+	// StaticSwitchの適用 複数まとめて
+	if (0 < StaticParams.StaticSwitchParameters.Num())
+	{
+		pUMIC->UpdateStaticPermutation(StaticParams);
+	}
+
+	return UnrealMaterial;
+}
+
+//--------------------------------------------------------------------
+// Create Material Inst. for Masked Mat Unlit
+//-------------------------------------------------------------------------
+UMaterialInterface* UPmxMaterialImport::CreateMaterialInst_Masked_Unlit(
+	FString ParentObjName,
+	MMD4UE4::PMX_MATERIAL & PmxMaterial,
+	FString MaterialFullName,
+	TArray<UTexture*>& textureAssetList)
+{
+	UMaterialInterface * UnrealMaterial = nullptr;
+
+	UMaterialInterface * ParentMaterial = this->DuplicateBaseMaterial(ParentObjName, E_DupBaseMat_Typ_Unlit_Normal);
+	if (nullptr == ParentMaterial)
+	{
+		UE_LOG(LogCategoryPMXMaterialImport, Error, TEXT("[%s]:Parent Material NULL:Path[%s]"), *(FString(__FUNCTION__)), *ParentObjName);
+
+		return nullptr;
+	}
+
+	UnrealMaterial = CreateMaterialInst(ParentObjName, MaterialFullName, ParentMaterial);
+
+	UMaterialInstanceConstant *pUMIC = nullptr;
+	pUMIC = Cast<UMaterialInstanceConstant>(UnrealMaterial);
+	if (nullptr == pUMIC)
+	{
+		UE_LOG(LogCategoryPMXMaterialImport, Error, TEXT("[%s]:Material NULL"), *(FString(__FUNCTION__)));
+
+		return nullptr;
+	}
+
+	//Set Param
+	FStaticParameterSet StaticParams;
+	// 新MICへテクスチャ設定 
+	UTexture* ColorTex = nullptr;
+	int32 TextureCount = PmxMaterial.TextureIndex;
+	//範囲内
+	if ((0 <= TextureCount) && (TextureCount < textureAssetList.Num()))
+	{
+		ColorTex = textureAssetList[TextureCount];
+	}
+
+
+	if (nullptr != ColorTex)
+	{
+		pUMIC->SetTextureParameterValueEditorOnly(
+			FName(TEXT(D_IM4U_MatInst_Name_BaseTexture)),
+			ColorTex
+		);
+
+		// ColorTex有効の場合はStaticSwitchでONにする 
+		FStaticSwitchParameter Param;
+		Param.ParameterInfo.Name = FName(D_IM4U_MatInst_Name_isTextureEnable);
+		Param.Value = true;
+		Param.bOverride = true;
+		StaticParams.StaticSwitchParameters.Add(Param);
+
+		UE_LOG(LogCategoryPMXMaterialImport, Log, TEXT("[%s]:MIC Texure mode enable "), *(FString(__FUNCTION__)));
+	}
+
+
+	//Diffuse Color
+	{
+		pUMIC->SetVectorParameterValueEditorOnly(
+			FName(TEXT(D_IM4U_MatInst_Name_DiffuseColor)),
+			FLinearColor(
+				PmxMaterial.Diffuse[0],
+				PmxMaterial.Diffuse[1],
+				PmxMaterial.Diffuse[2],
+				PmxMaterial.Diffuse[3])
+		);
+	}
+	//Ambient Color
+	{
+		pUMIC->SetVectorParameterValueEditorOnly(
+			FName(TEXT(D_IM4U_MatInst_Name_AmbientColor)),
+			FLinearColor(
+				PmxMaterial.Ambient[0],
+				PmxMaterial.Ambient[1],
+				PmxMaterial.Ambient[2])
+		);
+	}
+
+	if (pUMIC->BasePropertyOverrides.TwoSided != PmxMaterial.CullingOff)
+	{
+		// TowSide有効の場合はONにする 
+		pUMIC->BasePropertyOverrides.TwoSided = PmxMaterial.CullingOff;
+		pUMIC->BasePropertyOverrides.bOverride_TwoSided = true;
+		pUMIC->UpdateOverridableBaseProperties(); // OverrideParam Update
+		UE_LOG(LogCategoryPMXMaterialImport, Log, TEXT("[%s]:MIC TwoSided mode enable "), *(FString(__FUNCTION__)));
+	}
+
+	// StaticSwitchの適用 複数まとめて
+	if (0 < StaticParams.StaticSwitchParameters.Num())
+	{
+		pUMIC->UpdateStaticPermutation(StaticParams);
+	}
+
+	return UnrealMaterial;
+}
+
+
+//--------------------------------------------------------------------
+// Create Material Inst. for Luminous Mat
+//-------------------------------------------------------------------------
+UMaterialInterface* UPmxMaterialImport::CreateMaterialInst_Luminous(
+	FString ParentObjName,
+	MMD4UE4::PMX_MATERIAL & PmxMaterial,
+	FString MaterialFullName,
+	TArray<UTexture*>& textureAssetList)
+{
+	UMaterialInterface * UnrealMaterial = nullptr;
+
+	UMaterialInterface * ParentMaterial = this->DuplicateBaseMaterial(ParentObjName, E_DupBaseMat_Typ_Luminous);
+	if (nullptr == ParentMaterial)
+	{
+		UE_LOG(LogCategoryPMXMaterialImport, Error, TEXT("[%s]:Parent Material NULL:Path[%s]"), *(FString(__FUNCTION__)), *ParentObjName);
+
+		return nullptr;
+	}
+
+	UnrealMaterial = CreateMaterialInst(ParentObjName, MaterialFullName, ParentMaterial);
+
+	UMaterialInstanceConstant *pUMIC = nullptr;
+	pUMIC = Cast<UMaterialInstanceConstant>(UnrealMaterial);
+	if (nullptr == pUMIC)
+	{
+		UE_LOG(LogCategoryPMXMaterialImport, Error, TEXT("[%s]:Material NULL"), *(FString(__FUNCTION__)));
+
+		return nullptr;
+	}
+
+	//Set Param
+	FStaticParameterSet StaticParams;
+	// 新MICへテクスチャ設定 
+	UTexture* ColorTex = nullptr;
+	int32 TextureCount = PmxMaterial.TextureIndex;
+	//範囲内
+	if ((0 <= TextureCount) && (TextureCount < textureAssetList.Num()))
+	{
+		ColorTex = textureAssetList[TextureCount];
+	}
+
+
+	if (nullptr != ColorTex)
+	{
+		pUMIC->SetTextureParameterValueEditorOnly(
+			FName(TEXT(D_IM4U_MatInst_Name_BaseTexture)),
+			ColorTex
+		);
+
+		// ColorTex有効の場合はStaticSwitchでONにする 
+		FStaticSwitchParameter Param;
+		Param.ParameterInfo.Name = FName(D_IM4U_MatInst_Name_isTextureEnable);
+		Param.Value = true;
+		Param.bOverride = true;
+		StaticParams.StaticSwitchParameters.Add(Param);
+
+		UE_LOG(LogCategoryPMXMaterialImport, Log, TEXT("[%s]:MIC Texure mode enable "), *(FString(__FUNCTION__)));
+	}
+
+
+	//Diffuse Color
+	{
+		pUMIC->SetVectorParameterValueEditorOnly(
+			FName(TEXT(D_IM4U_MatInst_Name_DiffuseColor)),
+			FLinearColor(
+				PmxMaterial.Diffuse[0],
+				PmxMaterial.Diffuse[1],
+				PmxMaterial.Diffuse[2],
+				PmxMaterial.Diffuse[3])
+		);
+	}
+	//Ambient Color
+	{
+		pUMIC->SetVectorParameterValueEditorOnly(
+			FName(TEXT(D_IM4U_MatInst_Name_AmbientColor)),
+			FLinearColor(
+				PmxMaterial.Ambient[0],
+				PmxMaterial.Ambient[1],
+				PmxMaterial.Ambient[2])
+		);
+	}
+	//Specular Powor
+	{
+		float specPowr = 0.0f;
+		if (PmxMaterial.SpecularPower > D_IM4U_Param_SpecularPowor_Min)
+		{
+			specPowr = (PmxMaterial.SpecularPower - D_IM4U_Param_SpecularPowor_Min);
+			specPowr = specPowr / (D_IM4U_Param_SpecularPowor_Thd - D_IM4U_Param_SpecularPowor_Min);
+		}
+		pUMIC->SetScalarParameterValueEditorOnly(
+			FName(TEXT(D_IM4U_MatInst_Name_SpecularPower)),
+			specPowr);
+	}
+
+	if (pUMIC->BasePropertyOverrides.TwoSided != PmxMaterial.CullingOff)
+	{
+		// TowSide有効の場合はONにする 
+		pUMIC->BasePropertyOverrides.TwoSided = PmxMaterial.CullingOff;
+		pUMIC->BasePropertyOverrides.bOverride_TwoSided = true;
+		pUMIC->UpdateOverridableBaseProperties(); // OverrideParam Update
+		UE_LOG(LogCategoryPMXMaterialImport, Log, TEXT("[%s]:MIC TwoSided mode enable "), *(FString(__FUNCTION__)));
+	}
+
+	// StaticSwitchの適用 複数まとめて
+	if (0 < StaticParams.StaticSwitchParameters.Num())
+	{
+		pUMIC->UpdateStaticPermutation(StaticParams);
+	}
+
+	return UnrealMaterial;
+}
+
+
+//--------------------------------------------------------------------
+// Create Material Inst. for Luminous Mat Unlit
+//-------------------------------------------------------------------------
+UMaterialInterface* UPmxMaterialImport::CreateMaterialInst_Luminous_Unlit(
+	FString ParentObjName,
+	MMD4UE4::PMX_MATERIAL & PmxMaterial,
+	FString MaterialFullName,
+	TArray<UTexture*>& textureAssetList)
+{
+	UMaterialInterface * UnrealMaterial = nullptr;
+
+	UMaterialInterface * ParentMaterial = this->DuplicateBaseMaterial(ParentObjName, E_DupBaseMat_Typ_Unlit_Luminous);
+	if (nullptr == ParentMaterial)
+	{
+		UE_LOG(LogCategoryPMXMaterialImport, Error, TEXT("[%s]:Parent Material NULL:Path[%s]"), *(FString(__FUNCTION__)), *ParentObjName);
+
+		return nullptr;
+	}
+
+	UnrealMaterial = CreateMaterialInst(ParentObjName, MaterialFullName, ParentMaterial);
+
+	UMaterialInstanceConstant *pUMIC = nullptr;
+	pUMIC = Cast<UMaterialInstanceConstant>(UnrealMaterial);
+	if (nullptr == pUMIC)
+	{
+		UE_LOG(LogCategoryPMXMaterialImport, Error, TEXT("[%s]:Material NULL"), *(FString(__FUNCTION__)));
+
+		return nullptr;
+	}
+
+	//Set Param
+	FStaticParameterSet StaticParams;
+	// 新MICへテクスチャ設定 
+	UTexture* ColorTex = nullptr;
+	int32 TextureCount = PmxMaterial.TextureIndex;
+	//範囲内
+	if ((0 <= TextureCount) && (TextureCount < textureAssetList.Num()))
+	{
+		ColorTex = textureAssetList[TextureCount];
+	}
+
+
+	if (nullptr != ColorTex)
+	{
+		pUMIC->SetTextureParameterValueEditorOnly(
+			FName(TEXT(D_IM4U_MatInst_Name_BaseTexture)),
+			ColorTex
+		);
+
+		// ColorTex有効の場合はStaticSwitchでONにする 
+		FStaticSwitchParameter Param;
+		Param.ParameterInfo.Name = FName(D_IM4U_MatInst_Name_isTextureEnable);
+		Param.Value = true;
+		Param.bOverride = true;
+		StaticParams.StaticSwitchParameters.Add(Param);
+
+		UE_LOG(LogCategoryPMXMaterialImport, Log, TEXT("[%s]:MIC Texure mode enable "), *(FString(__FUNCTION__)));
+	}
+
+
+	//Diffuse Color
+	{
+		pUMIC->SetVectorParameterValueEditorOnly(
+			FName(TEXT(D_IM4U_MatInst_Name_DiffuseColor)),
+			FLinearColor(
+				PmxMaterial.Diffuse[0],
+				PmxMaterial.Diffuse[1],
+				PmxMaterial.Diffuse[2],
+				PmxMaterial.Diffuse[3])
+		);
+	}
+	//Ambient Color
+	{
+		pUMIC->SetVectorParameterValueEditorOnly(
+			FName(TEXT(D_IM4U_MatInst_Name_AmbientColor)),
+			FLinearColor(
+				PmxMaterial.Ambient[0],
+				PmxMaterial.Ambient[1],
+				PmxMaterial.Ambient[2])
+		);
+	}
+	//Specular Powor
+	{
+		float specPowr = 0.0f;
+		if (PmxMaterial.SpecularPower > D_IM4U_Param_SpecularPowor_Min)
+		{
+			specPowr = (PmxMaterial.SpecularPower - D_IM4U_Param_SpecularPowor_Min);
+			specPowr = specPowr/(D_IM4U_Param_SpecularPowor_Thd - D_IM4U_Param_SpecularPowor_Min);
+		}
+		pUMIC->SetScalarParameterValueEditorOnly(
+			FName(TEXT(D_IM4U_MatInst_Name_SpecularPower)),
+			specPowr);
+	}
+
+	if (pUMIC->BasePropertyOverrides.TwoSided != PmxMaterial.CullingOff)
+	{
+		// TowSide有効の場合はONにする 
+		pUMIC->BasePropertyOverrides.TwoSided = PmxMaterial.CullingOff;
+		pUMIC->BasePropertyOverrides.bOverride_TwoSided = true;
+		pUMIC->UpdateOverridableBaseProperties(); // OverrideParam Update
+		UE_LOG(LogCategoryPMXMaterialImport, Log, TEXT("[%s]:MIC TwoSided mode enable "), *(FString(__FUNCTION__)));
+	}
+
+	// StaticSwitchの適用 複数まとめて
+	if (0 < StaticParams.StaticSwitchParameters.Num())
+	{
+		pUMIC->UpdateStaticPermutation(StaticParams);
+	}
+
+	return UnrealMaterial;
+}
+//-------------------------------------------------------------------------
