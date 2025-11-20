@@ -91,15 +91,7 @@ void UPmxFactory::PostInitProperties()
 {
 	Super::PostInitProperties();
 
-	// Verifica che l'oggetto ImportUI non sia già stato creato
-	if (!ImportUI)
-	{
-		ImportUI = NewObject<UPmxImportUI>(this, NAME_None, RF_NoFlags);
-		if (!ImportUI)
-		{
-			UE_LOG(LogTemp, Error, TEXT("Impossibile creare l'oggetto UPmxImportUI"));
-		}
-	}
+	ImportUI = NewObject<UPmxImportUI>(this, NAME_None, RF_NoFlags);
 }
 
 bool UPmxFactory::DoesSupportClass(UClass* Class)
@@ -1378,12 +1370,10 @@ USkeletalMesh* UPmxFactory::ImportSkeletalMesh(
 		{
 			SkeletalMesh->PhysicsAsset = ImportOptions->PhysicsAsset;
 		}*/
-	}
-#endif // phy
 
-	// see if we have skeleton set up
-	// if creating skeleton, create skeleeton
-	USkeleton* Skeleton = NULL;
+		// see if we have skeleton set up
+		// if creating skeleton, create skeleeton
+		USkeleton* Skeleton = NULL;
 		//Skeleton = ImportOptions->SkeletonForAnimation;
 		if (Skeleton == NULL)
 		{
@@ -1402,6 +1392,7 @@ USkeletalMesh* UPmxFactory::ImportSkeletalMesh(
 					return SkeletalMesh;
 				}
 			}
+		}
 		
 		// merge bones to the selected skeleton
 		if ( !Skeleton->MergeAllBonesToBoneTree( SkeletalMesh ) )
@@ -1432,6 +1423,7 @@ USkeletalMesh* UPmxFactory::ImportSkeletalMesh(
 			SkeletalMesh->MarkPackageDirty();
 		}
 	}
+#endif
 	return SkeletalMesh;
 }
 
@@ -1503,14 +1495,6 @@ UMMDExtendAsset * UPmxFactory::CreateMMDExtendFromMMDModel(
 			if (PmxMeshInfo->boneList[boneIdx].Flag_IK)
 			{
 				MMD4UE4::PMX_IK * tempPmxIKPtr = &PmxMeshInfo->boneList[boneIdx].IKInfo;
-				if (!PmxMeshInfo->boneList.IsValidIndex(tempPmxIKPtr->TargetBoneIndex))
-				{
-					UE_LOG(LogMMD4UE4_PMXFactory, Warning,
-						TEXT("CreateMMDExtendFromMMDModel: TargetBoneIndex %d is invalid for IK bone '%s'"),
-						tempPmxIKPtr->TargetBoneIndex,
-						*PmxMeshInfo->boneList[boneIdx].Name);
-					continue;
-				}
 				FMMD_IKInfo addMMDIkInfo;
 
 				addMMDIkInfo.LoopNum = tempPmxIKPtr->LoopNum;
@@ -1528,22 +1512,11 @@ UMMDExtendAsset * UPmxFactory::CreateMMDExtendFromMMDModel(
 				addMMDIkInfo.TargetBoneIndex = ReferenceSkeleton.FindBoneIndex(addMMDIkInfo.TargetBoneName);
 				//set sub ik
 				addMMDIkInfo.ikLinkList.AddZeroed(tempPmxIKPtr->LinkNum);
-				bool bValidChain = true;
 				for (int ikInfoID = 0; ikInfoID < tempPmxIKPtr->LinkNum; ++ikInfoID)
 				{
 					//link bone index
-					const int32 LinkBoneIndex = tempPmxIKPtr->Link[ikInfoID].BoneIndex;
-					if (!PmxMeshInfo->boneList.IsValidIndex(LinkBoneIndex))
-					{
-						UE_LOG(LogMMD4UE4_PMXFactory, Warning,
-							TEXT("CreateMMDExtendFromMMDModel: Link bone index %d is invalid for IK bone '%s'"),
-							LinkBoneIndex,
-							*PmxMeshInfo->boneList[boneIdx].Name);
-						bValidChain = false;
-						break;
-					}
 					addMMDIkInfo.ikLinkList[ikInfoID].BoneName
-						= FName(*PmxMeshInfo->boneList[LinkBoneIndex].Name);
+						= FName(*PmxMeshInfo->boneList[tempPmxIKPtr->Link[ikInfoID].BoneIndex].Name);
 					//issue #2: Fix link bone index
 					//link bone index from skeleton.
 					addMMDIkInfo.ikLinkList[ikInfoID].BoneIndex
@@ -1558,10 +1531,6 @@ UMMDExtendAsset * UPmxFactory::CreateMMDExtendFromMMDModel(
 					addMMDIkInfo.ikLinkList[ikInfoID].RotLockMax.X = tempPmxIKPtr->Link[ikInfoID].RotLockMax[0];
 					addMMDIkInfo.ikLinkList[ikInfoID].RotLockMax.Y = tempPmxIKPtr->Link[ikInfoID].RotLockMax[1];
 					addMMDIkInfo.ikLinkList[ikInfoID].RotLockMax.Z = tempPmxIKPtr->Link[ikInfoID].RotLockMax[2];
-				}
-				if (!bValidChain)
-				{
-					continue;
 				}
 				//add
 				NewMMDExtendAsset->IkInfoList.Add(addMMDIkInfo);
