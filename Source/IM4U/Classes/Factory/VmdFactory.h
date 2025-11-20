@@ -133,7 +133,7 @@ class IM4U_API UVmdFactory : public UFactory
 	* @param :TargetName is Target Bone Name
 	****************/
 	FTransform3f CalcGlbTransformFromBoneIndex(
-		UAnimSequence* DestSeq,
+		const TArray<FRawAnimSequenceTrack>& BoneTracks,
 		USkeleton* Skeleton,
 		int32 BoneIndex,
 		int32 keyIndex

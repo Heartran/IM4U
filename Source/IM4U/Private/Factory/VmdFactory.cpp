@@ -7,6 +7,7 @@
 
 #include "Animation/AnimData/IAnimationDataController.h"
 #include "Animation/AnimData/IAnimationDataModel.h"
+#include "Animation/AnimCurveTypes.h"
 #include "CoreMinimal.h"
 #include "ImportUtils/SkelImport.h"
 #include "AnimationUtils.h"
@@ -393,7 +394,8 @@ UAnimSequence * UVmdFactory::ImportAnimations(
 		}
 		else
 		{
-			DestSeq->RecycleAnimSequence();
+			DestSeq->Modify();
+			DestSeq->GetController().ResetModel(false);
 		}
 
 		DestSeq->SetSkeleton(Skeleton);
@@ -441,25 +443,6 @@ UAnimSequence * UVmdFactory::ImportAnimations(
 			UE_LOG(LogMMD4UE4_VMDFactory, Log,
 				TEXT("[ImportAnimations] Set PreviewMesh Pointer.")
 			);
-		}
-	}
-
-	/////////////////////////////////////////
-	// end process?
-	////////////////////////////////////////
-	if (LastCreatedAnim)
-	{
-		/***********************/
-		// refresh TrackToskeletonMapIndex
-		//LastCreatedAnim->RefreshTrackMapFromAnimTrackNames();
-		if (false)
-		{
-			LastCreatedAnim->BakeTrackCurvesToRawAnimation();
-		}
-		else
-		{
-			// otherwise just compress
-			LastCreatedAnim->PostProcessSequence();
 		}
 	}
 
@@ -533,26 +516,6 @@ UAnimSequence * UVmdFactory::AddtionalMorphCurveImportToAnimations(
 		}
 	}
 
-	/////////////////////////////////////////
-	// end process?
-	////////////////////////////////////////
-	if (exsistAnimSequ)
-	{
-		bool existAsset = true;
-		/***********************/
-		// refresh TrackToskeletonMapIndex
-		//exsistAnimSequ->RefreshTrackMapFromAnimTrackNames();
-		if (existAsset)
-		{
-			exsistAnimSequ->BakeTrackCurvesToRawAnimation();
-		}
-		else
-		{
-			// otherwise just compress
-			exsistAnimSequ->PostProcessSequence();
-		}
-	}
-
 	return exsistAnimSequ;
 }
 /*******************
@@ -569,140 +532,102 @@ bool UVmdFactory::ImportMorphCurveToAnimSequence(
 {
 	if (!DestSeq || !Skeleton || !vmdMotionInfo)
 	{
-		//TBD:: ERR in Param...
 		return false;
 	}
-	//USkeletalMesh * mesh = Skeleton->GetAssetPreviewMesh(DestSeq);// GetPreviewMesh();
-	USkeletalMesh * mesh = SkeletalMesh;
-	if (!mesh)
+
+	USkeletalMesh* Mesh = SkeletalMesh;
+	if (!Mesh)
 	{
-		//このルートに入る条件がSkeleton Asset生成後一度もアセットを開いていない場合、
-		// NULLの模様。この関数を使うよりも別の手段を考えた方が良さそう…。要調査枠。
-		//TDB::ERR.  previewMesh is Null
-		{
-			UE_LOG(LogMMD4UE4_VMDFactory, Error,
-				TEXT("ImportMorphCurveToAnimSequence GetAssetPreviewMesh Not Found...")
-				);
-		}
+		UE_LOG(LogMMD4UE4_VMDFactory, Error,
+			TEXT("ImportMorphCurveToAnimSequence GetAssetPreviewMesh Not Found..."));
 		return false;
 	}
-	/* morph animation regist*/
-	for (int i = 0; i < vmdMotionInfo->keyFaceList.Num(); ++i)
+
+	IAnimationDataController& Controller = DestSeq->GetController();
+	const FSmartNameMapping* NameMapping = Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
+	const IAnimationDataModel* DataModel = Controller.GetModel();
+
+	Controller.OpenBracket(LOCTEXT("IM4U_ImportMorphCurves", "Importing VMD Morph Curves"), false);
+
+	for (int32 TrackIndex = 0; TrackIndex < vmdMotionInfo->keyFaceList.Num(); ++TrackIndex)
 	{
-		MMD4UE4::VmdFaceTrackList * vmdFaceTrackPtr = &vmdMotionInfo->keyFaceList[i];
-		/********************************************/
-		//original
-		FName Name = *vmdFaceTrackPtr->TrackName;
+		MMD4UE4::VmdFaceTrackList* VmdFaceTrackPtr = &vmdMotionInfo->keyFaceList[TrackIndex];
+		FName TargetName = *VmdFaceTrackPtr->TrackName;
 		if (ReNameTable)
 		{
-			FName tempUe4Name;
-			if (FindTableRowMMD2UEName(ReNameTable,Name,&tempUe4Name) )
+			FName RemappedName;
+			if (FindTableRowMMD2UEName(ReNameTable, TargetName, &RemappedName))
 			{
-				Name = tempUe4Name;
+				TargetName = RemappedName;
 			}
 		}
-#if 0	/* under ~UE4.10*/
-		FSmartNameMapping* NameMapping 
-			//= Skeleton->SmartNames.GetContainer(USkeleton::AnimCurveMappingName); 
-#else	/* UE4.11~ over */
-		const FSmartNameMapping* NameMapping
-			//= const_cast<FSmartNameMapping*>(Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName));//UE4.11~
-			= Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);//UE4.11~
-#endif
-		/**********************************/
-		//self
-		if (mesh != NULL)
+
+		if (Mesh)
 		{
-			UMorphTarget * morphTargetPtr = mesh->FindMorphTarget(Name);
-			if (!morphTargetPtr)
+			UMorphTarget* MorphTargetPtr = Mesh->FindMorphTarget(TargetName);
+			if (!MorphTargetPtr)
 			{
-				//TDB::ERR. not found Morph Target(Name) in mesh
-				{
-					UE_LOG(LogMMD4UE4_VMDFactory, Warning,
-						TEXT("ImportMorphCurveToAnimSequence Target Morph Not Found...Search[%s]VMD-Org[%s]"),
-						*Name.ToString(), *vmdFaceTrackPtr->TrackName);
-				}
+				UE_LOG(LogMMD4UE4_VMDFactory, Warning,
+					TEXT("ImportMorphCurveToAnimSequence Target Morph Not Found...Search[%s]VMD-Org[%s]"),
+					*TargetName.ToString(), *VmdFaceTrackPtr->TrackName);
 				continue;
 			}
 		}
-		/*********************************/
-		// Add or retrieve curve
-		if (!NameMapping->Exists(Name))
+
+		if (!NameMapping || !NameMapping->Exists(TargetName))
 		{
-			// mark skeleton dirty
 			Skeleton->Modify();
 		}
 
-		FSmartName NewName;
-		Skeleton->AddSmartNameAndModify(USkeleton::AnimCurveMappingName, Name, NewName);
+		FSmartName SmartName;
+		Skeleton->AddSmartNameAndModify(USkeleton::AnimCurveMappingName, TargetName, SmartName);
+		const FAnimationCurveIdentifier CurveId(SmartName, ERawCurveTrackTypes::RCT_Float);
 
-		// FloatCurve for Morph Target 
-		int CurveFlags = AACF_DriveMorphTarget_DEPRECATED;
+		if (!DataModel || !DataModel->FindFloatCurve(CurveId))
+		{
+			Controller.AddCurve(CurveId, AACF_DriveMorphTarget_DEPRECATED | AACF_DefaultCurve, false);
+		}
+		Controller.SetCurveFlags(CurveId, AACF_DriveMorphTarget_DEPRECATED | AACF_DefaultCurve, false);
 
-		FFloatCurve * CurveToImport
-			= static_cast<FFloatCurve *>(DestSeq->RawCurveData.GetCurveData(NewName.UID, ERawCurveTrackTypes::RCT_Float));
-		if (CurveToImport == NULL)
+		TArray<FRichCurveKey> CurveKeys;
+		CurveKeys.Reserve(VmdFaceTrackPtr->keyList.Num());
+
+		for (int32 SortedIndex = 0; SortedIndex < VmdFaceTrackPtr->keyList.Num(); ++SortedIndex)
 		{
-			if (DestSeq->RawCurveData.AddCurveData(NewName, CurveFlags))
+			const int32 KeyLookupIndex = VmdFaceTrackPtr->sortIndexList[SortedIndex];
+			if (!VmdFaceTrackPtr->keyList.IsValidIndex(KeyLookupIndex))
 			{
-				CurveToImport
-					= static_cast<FFloatCurve *> (DestSeq->RawCurveData.GetCurveData(NewName.UID, ERawCurveTrackTypes::RCT_Float));
-				CurveToImport->Name = NewName;
+				continue;
 			}
-			else
+
+			const MMD4UE4::VMD_FACE_KEY& FaceKey = VmdFaceTrackPtr->keyList[KeyLookupIndex];
+			const float TimeCurve = FaceKey.Frame / 30.0f;
+			if (TimeCurve > DestSeq->GetPlayLength())
 			{
-				// this should not happen, we already checked before adding
-				UE_LOG(LogMMD4UE4_VMDFactory, Warning,
-					TEXT("VMD Import: Critical error: no memory?"));
-			}
-		}
-		else
-		{
-			CurveToImport->FloatCurve.Reset();
-			// if existing add these curve flags. 
-			CurveToImport->SetCurveTypeFlags(CurveFlags | CurveToImport->GetCurveTypeFlags());
-		}
-		
-		/**********************************************/
-		MMD4UE4::VMD_FACE_KEY * faceKeyPtr = NULL;
-		for (int s = 0; s < vmdFaceTrackPtr->keyList.Num(); ++s)
-		{
-			check(vmdFaceTrackPtr->sortIndexList[s] < vmdFaceTrackPtr->keyList.Num());
-			faceKeyPtr = &vmdFaceTrackPtr->keyList[vmdFaceTrackPtr->sortIndexList[s]];
-			check(faceKeyPtr);
-			/********************************************/
-			float timeCurve = faceKeyPtr->Frame / 30.0f;
-			if (timeCurve > DestSeq->GetPlayLength())
-			{
-				//this key frame(time) more than Target SeqLength ... 
 				break;
 			}
-			CurveToImport->FloatCurve.AddKey(timeCurve, faceKeyPtr->Factor, true);
-			/********************************************/
+
+			FRichCurveKey& NewKey = CurveKeys.AddDefaulted_GetRef();
+			NewKey.Time = TimeCurve;
+			NewKey.Value = FaceKey.Factor;
+			NewKey.InterpMode = ERichCurveInterpMode::RCIM_Linear;
 		}
 
-		// update last observed name. If not, sometimes it adds new UID while fixing up that will confuse Compressed Raw Data
-		const FSmartNameMapping* Mapping = Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-		DestSeq->RawCurveData.RefreshName(Mapping);
-
-		/***********************************************************************************/
-		// Trace Log ( for debug message , compleat import morph of this track )
-		if (true)
+		if (CurveKeys.Num() == 0)
 		{
-			UE_LOG(LogMMD4UE4_VMDFactory, Log,
-				TEXT("ImportMorphCurveToAnimSequence Target Morph compleat...NameSearch[%s]VMD-Org[%s], KeyListNum[%d]"),
-				*Name.ToString(), *vmdFaceTrackPtr->TrackName, vmdFaceTrackPtr->keyList.Num() );
+			continue;
 		}
-		/***********************************************************************************/
+
+		Controller.SetCurveKeys(CurveId, CurveKeys, false);
+
+		UE_LOG(LogMMD4UE4_VMDFactory, Log,
+			TEXT("ImportMorphCurveToAnimSequence Target Morph complete...NameSearch[%s]VMD-Org[%s], KeyListNum[%d]"),
+			*TargetName.ToString(), *VmdFaceTrackPtr->TrackName, VmdFaceTrackPtr->keyList.Num());
 	}
+
+	Controller.CloseBracket(false);
 	return true;
 }
-
-
-/*******************
-* Import VMD Animation
-* VMDファイルのデータからモーションデータをAnimSeqに取り込む
-**********************/
 bool UVmdFactory::ImportVMDToAnimSequence(
 	UAnimSequence* DestSeq,
 	USkeleton* Skeleton,
@@ -740,7 +665,7 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 	/////////////////////////////////
 	const int32 NumBones = Skeleton->GetReferenceSkeleton().GetNum();
 #if 0 /* :UE414: 4.14からのエンジン仕様変更による対象 */
-	DestSeq->RawAnimationData.AddZeroed(NumBones);
+	ImportRawTrackList.AddZeroed(NumBones);
 	DestSeq->AnimationTrackNames.AddUninitialized(NumBones);
 #endif
 
@@ -1094,7 +1019,7 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 #else	/* ~UE4.13 */
 			DestSeq->AnimationTrackNames[BoneIndex] = Skeleton->GetReferenceSkeleton().GetBoneName(BoneIndex);
 
-			FRawAnimSequenceTrack& RawTrack = DestSeq->RawAnimationData[BoneIndex];
+			FRawAnimSequenceTrack& RawTrack = ImportRawTrackList[BoneIndex];
 #endif
 			FRawAnimSequenceTrack& LocalRawTrack = TempRawTrackList[BoneIndex];
 
@@ -1214,7 +1139,7 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 		//案2：FKを全フレーム計算完了後にIKだけまとめてフレーム単位で再計算
 
 		//
-		for (int32 k = 0; k < DestSeq->NumFrames; k++)
+		for (int32 k = 0; k < TotalSampledKeys; k++)
 		{
 			// ik Target loop func...
 			for (int32 ikTargetIndex = 0; ikTargetIndex < mmdExtend->IkInfoList.Num(); ++ikTargetIndex)
@@ -1236,26 +1161,26 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 				FTransform3f tempGlbTargetBoneTrsf;
 				TArray<FTransform3f> tempGlbIkLinkTrsfList;
 				//get glb trsf
-				/*DestSeq->RawAnimationData[mmdExtend->IkInfoList[ikTargetIndex].IKBoneIndex].PosKeys[k]
+				/*ImportRawTrackList[mmdExtend->IkInfoList[ikTargetIndex].IKBoneIndex].PosKeys[k]
 					= RefBonePose[mmdExtend->IkInfoList[ikTargetIndex].IKBoneIndex].GetTranslation();
-				DestSeq->RawAnimationData[mmdExtend->IkInfoList[ikTargetIndex].IKBoneIndex].RotKeys[k]
+				ImportRawTrackList[mmdExtend->IkInfoList[ikTargetIndex].IKBoneIndex].RotKeys[k]
 					= RefBonePose[mmdExtend->IkInfoList[ikTargetIndex].IKBoneIndex].GetRotation();
-				DestSeq->RawAnimationData[mmdExtend->IkInfoList[ikTargetIndex].IKBoneIndex].ScaleKeys[k]
+				ImportRawTrackList[mmdExtend->IkInfoList[ikTargetIndex].IKBoneIndex].ScaleKeys[k]
 					= FVector3f(1);*/
 				tempGlbIkBoneTrsf = CalcGlbTransformFromBoneIndex(
-					DestSeq,
+					ImportRawTrackList,
 					Skeleton,
 					mmdExtend->IkInfoList[ikTargetIndex].IKBoneIndex,
 					k
 					);
-				/*DestSeq->RawAnimationData[mmdExtend->IkInfoList[ikTargetIndex].TargetBoneIndex].PosKeys[k]
+				/*ImportRawTrackList[mmdExtend->IkInfoList[ikTargetIndex].TargetBoneIndex].PosKeys[k]
 					= RefBonePose[mmdExtend->IkInfoList[ikTargetIndex].TargetBoneIndex].GetTranslation();
-				DestSeq->RawAnimationData[mmdExtend->IkInfoList[ikTargetIndex].TargetBoneIndex].RotKeys[k]
+				ImportRawTrackList[mmdExtend->IkInfoList[ikTargetIndex].TargetBoneIndex].RotKeys[k]
 					= RefBonePose[mmdExtend->IkInfoList[ikTargetIndex].TargetBoneIndex].GetRotation();
-				DestSeq->RawAnimationData[mmdExtend->IkInfoList[ikTargetIndex].TargetBoneIndex].ScaleKeys[k]
+				ImportRawTrackList[mmdExtend->IkInfoList[ikTargetIndex].TargetBoneIndex].ScaleKeys[k]
 					= FVector3f(1);*/
 				tempGlbTargetBoneTrsf = CalcGlbTransformFromBoneIndex(
-					DestSeq,
+					ImportRawTrackList,
 					Skeleton,
 					mmdExtend->IkInfoList[ikTargetIndex].TargetBoneIndex,
 					k
@@ -1263,14 +1188,14 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 				tempGlbIkLinkTrsfList.AddZeroed(ilLinklistNum);
 				for (int32 glbIndx = 0; glbIndx < ilLinklistNum; ++glbIndx)
 				{
-					/*DestSeq->RawAnimationData[mmdExtend->IkInfoList[ikTargetIndex].ikLinkList[glbIndx].BoneIndex].PosKeys[k]
+					/*ImportRawTrackList[mmdExtend->IkInfoList[ikTargetIndex].ikLinkList[glbIndx].BoneIndex].PosKeys[k]
 						= RefBonePose[mmdExtend->IkInfoList[ikTargetIndex].ikLinkList[glbIndx].BoneIndex].GetTranslation();
-					DestSeq->RawAnimationData[mmdExtend->IkInfoList[ikTargetIndex].ikLinkList[glbIndx].BoneIndex].RotKeys[k]
+					ImportRawTrackList[mmdExtend->IkInfoList[ikTargetIndex].ikLinkList[glbIndx].BoneIndex].RotKeys[k]
 						= RefBonePose[mmdExtend->IkInfoList[ikTargetIndex].ikLinkList[glbIndx].BoneIndex].GetRotation();
-					DestSeq->RawAnimationData[mmdExtend->IkInfoList[ikTargetIndex].ikLinkList[glbIndx].BoneIndex].ScaleKeys[k]
+					ImportRawTrackList[mmdExtend->IkInfoList[ikTargetIndex].ikLinkList[glbIndx].BoneIndex].ScaleKeys[k]
 						= FVector3f(1);*/
 					tempGlbIkLinkTrsfList[glbIndx] = CalcGlbTransformFromBoneIndex(
-						DestSeq,
+						ImportRawTrackList,
 						Skeleton,
 						mmdExtend->IkInfoList[ikTargetIndex].ikLinkList[glbIndx].BoneIndex,
 						k
@@ -1325,8 +1250,8 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 							qt = FQuat4f(asix, angle);
 							// 変換行列に合成 
 							tempCalcIKTrns.SetIdentity();
-							//tempCalcIKTrns.SetTranslation(DestSeq->RawAnimationData[rawIndex].PosKeys[k]);
-							tempCalcIKTrns.SetRotation(DestSeq->RawAnimationData[rawIndex].RotKeys[k]);
+							//tempCalcIKTrns.SetTranslation(ImportRawTrackList[rawIndex].PosKeys[k]);
+							tempCalcIKTrns.SetRotation(ImportRawTrackList[rawIndex].RotKeys[k]);
 							tempCalcIKTrns *= FTransform3f(qt);
 
 							//軸制限計算
@@ -1345,7 +1270,7 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 								tempCalcIKTrns *= FTransform3f(FQuat4f::MakeFromEuler(subEulerAngleVec));
 							}
 							//CCD-IK後の回転軸更新
-							DestSeq->RawAnimationData[rawIndex].RotKeys[k]
+							ImportRawTrackList[rawIndex].RotKeys[k]
 								= tempCalcIKTrns.GetRotation();
 #if 0
 							UE_LOG(LogMMD4UE4_VMDFactory, Warning,
@@ -1358,13 +1283,13 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 #endif
 							// recalc glb trans
 							tempGlbIkBoneTrsf = CalcGlbTransformFromBoneIndex(
-								DestSeq,
+								ImportRawTrackList,
 								Skeleton,
 								mmdExtend->IkInfoList[ikTargetIndex].IKBoneIndex,
 								k
 								);
 							tempGlbTargetBoneTrsf = CalcGlbTransformFromBoneIndex(
-								DestSeq,
+								ImportRawTrackList,
 								Skeleton,
 								mmdExtend->IkInfoList[ikTargetIndex].TargetBoneIndex,
 								k
@@ -1373,7 +1298,7 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 							for (int32 glbIndx = 0; glbIndx < ilLinklistNum; ++glbIndx)
 							{
 								tempGlbIkLinkTrsfList[glbIndx] = CalcGlbTransformFromBoneIndex(
-									DestSeq,
+									ImportRawTrackList,
 									Skeleton,
 									mmdExtend->IkInfoList[ikTargetIndex].ikLinkList[glbIndx].BoneIndex,
 									k
@@ -1415,7 +1340,7 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 						//親計算：無駄計算を省きたいがうまい方法が見つからないので保留
 						FVector3f ChainParentBone_Asix;
 						FTransform3f tempGlbChainParentBoneTrsf = CalcGlbTransformFromBoneIndex(
-							DestSeq,
+							ImportRawTrackList,
 							Skeleton,
 							Skeleton->GetReferenceSkeleton().GetParentIndex(IKBaseLinkPtr->BoneIndex),//parent
 							k
@@ -1658,7 +1583,7 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 							//QuatConvertFromMatrix(ChainBone->IKQuat, ChainBone->IKmat);
 							tempGlbIkBoneTrsf.SetFromMatrix(ChainBone_IKmat);
 							tempGlbIkBoneTrsf.SetScale3D(FVector3f(1));//reset scale
-							DestSeq->RawAnimationData[rawIndex].RotKeys[k]
+							ImportRawTrackList[rawIndex].RotKeys[k]
 								= tempGlbIkBoneTrsf.GetRotation();
 #if 0
 							UE_LOG(LogMMD4UE4_VMDFactory, Warning,
@@ -1678,7 +1603,7 @@ bool UVmdFactory::ImportVMDToAnimSequence(
 						else
 						{
 							//non limit
-							DestSeq->RawAnimationData[rawIndex].RotKeys[k]
+							ImportRawTrackList[rawIndex].RotKeys[k]
 								= tempGlbIkBoneTrsf.GetRotation();
 						}
 						//////////////////////////////////////////////////
@@ -1869,44 +1794,34 @@ int32 UVmdFactory::FindRefBoneInfoIndexFromBoneName(
 * @param :TargetName is Target Bone Name
 ****************/
 FTransform3f UVmdFactory::CalcGlbTransformFromBoneIndex(
-	UAnimSequence* DestSeq,
+	const TArray<FRawAnimSequenceTrack>& BoneTracks,
 	USkeleton* Skeleton,
 	int32 BoneIndex,
 	int32 keyIndex
 	)
 {
-	if (DestSeq == NULL || Skeleton == NULL || BoneIndex < 0 || keyIndex < 0)
-	{
-		//error root
-		return FTransform3f::Identity;
-	}
-	const IAnimationDataModel* DataModel = DestSeq->GetDataModel();
-	if (DataModel == nullptr)
+	if (Skeleton == nullptr || BoneIndex < 0 || keyIndex < 0 || !BoneTracks.IsValidIndex(BoneIndex))
 	{
 		return FTransform3f::Identity;
 	}
-	const int32 NumBoneTracks = DataModel->GetNumBoneTracks();
-	if (BoneIndex >= NumBoneTracks)
-	{
-		return FTransform3f::Identity;
-	}
-	const FBoneAnimationTrack& BoneTrack = DataModel->GetBoneTrackByIndex(BoneIndex);
-	const FQuat4f RotationKey = GetAnimationKeyValue<FQuat4f>(BoneTrack.InternalTrackData.RotKeys, keyIndex, FQuat4f::Identity);
-	const FVector3f TranslationKey = GetAnimationKeyValue<FVector3f>(BoneTrack.InternalTrackData.PosKeys, keyIndex, FVector3f::ZeroVector);
-	const FVector3f ScaleKey = GetAnimationKeyValue<FVector3f>(BoneTrack.InternalTrackData.ScaleKeys, keyIndex, FVector3f::OneVector);
-	FTransform3f resultTrans(RotationKey, TranslationKey, ScaleKey);
-	int ParentBoneIndex = Skeleton->GetReferenceSkeleton().GetParentIndex(BoneIndex);
+
+	const FRawAnimSequenceTrack& BoneTrack = BoneTracks[BoneIndex];
+	const FQuat4f RotationKey = GetAnimationKeyValue<FQuat4f>(BoneTrack.RotKeys, keyIndex, FQuat4f::Identity);
+	const FVector3f TranslationKey = GetAnimationKeyValue<FVector3f>(BoneTrack.PosKeys, keyIndex, FVector3f::ZeroVector);
+	const FVector3f ScaleKey = GetAnimationKeyValue<FVector3f>(BoneTrack.ScaleKeys, keyIndex, FVector3f::OneVector);
+	FTransform3f ResultTrans(RotationKey, TranslationKey, ScaleKey);
+	const int32 ParentBoneIndex = Skeleton->GetReferenceSkeleton().GetParentIndex(BoneIndex);
 	if (ParentBoneIndex >= 0)
 	{
-		//found parent bone
-		resultTrans *= CalcGlbTransformFromBoneIndex(
-			DestSeq,
-			Skeleton,
-			ParentBoneIndex,
-			keyIndex
-			);
+		ResultTrans *= CalcGlbTransformFromBoneIndex(BoneTracks, Skeleton, ParentBoneIndex, keyIndex);
 	}
-	return resultTrans;
+	return ResultTrans;
 }
 
+
 #undef LOCTEXT_NAMESPACE
+
+
+
+
+
