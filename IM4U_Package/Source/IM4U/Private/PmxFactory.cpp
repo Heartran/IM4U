@@ -1506,21 +1506,56 @@ UMMDExtendAsset * UPmxFactory::CreateMMDExtendFromMMDModel(
 				//this bone(ik-bone) index, from skeleton.
 				addMMDIkInfo.IKBoneIndex = ReferenceSkeleton.FindBoneIndex(addMMDIkInfo.IKBoneName);
 				//ik target 
+				if (!PmxMeshInfo->boneList.IsValidIndex(tempPmxIKPtr->TargetBoneIndex))
+				{
+					UE_LOG(LogMMD4UE4_PMXFactory, Warning,
+						TEXT("CreateMMDExtendFromMMDModel: Target bone index %d invalid for IK '%s'"),
+						tempPmxIKPtr->TargetBoneIndex,
+						*addMMDIkInfo.IKBoneName.ToString());
+					continue;
+				}
 				addMMDIkInfo.TargetBoneName = FName(*PmxMeshInfo->boneList[tempPmxIKPtr->TargetBoneIndex].Name);
 				//issue #2: Fix Target Bone Index 
 				//target bone(ik-target bone) index, from skeleton.
 				addMMDIkInfo.TargetBoneIndex = ReferenceSkeleton.FindBoneIndex(addMMDIkInfo.TargetBoneName);
+				if (addMMDIkInfo.IKBoneIndex == INDEX_NONE || addMMDIkInfo.TargetBoneIndex == INDEX_NONE)
+				{
+					UE_LOG(LogMMD4UE4_PMXFactory, Warning,
+						TEXT("CreateMMDExtendFromMMDModel: Invalid IK bone '%s' or target '%s'"),
+						*addMMDIkInfo.IKBoneName.ToString(),
+						*addMMDIkInfo.TargetBoneName.ToString());
+					continue;
+				}
 				//set sub ik
 				addMMDIkInfo.ikLinkList.AddZeroed(tempPmxIKPtr->LinkNum);
+				bool bValidChain = true;
 				for (int ikInfoID = 0; ikInfoID < tempPmxIKPtr->LinkNum; ++ikInfoID)
 				{
 					//link bone index
+					const int32 LinkBoneIndex = tempPmxIKPtr->Link[ikInfoID].BoneIndex;
+					if (!PmxMeshInfo->boneList.IsValidIndex(LinkBoneIndex))
+					{
+						UE_LOG(LogMMD4UE4_PMXFactory, Warning,
+							TEXT("CreateMMDExtendFromMMDModel: Invalid link bone index %d for IK '%s'"),
+							LinkBoneIndex,
+							*addMMDIkInfo.IKBoneName.ToString());
+						bValidChain = false;
+						break;
+					}
 					addMMDIkInfo.ikLinkList[ikInfoID].BoneName
-						= FName(*PmxMeshInfo->boneList[tempPmxIKPtr->Link[ikInfoID].BoneIndex].Name);
+						= FName(*PmxMeshInfo->boneList[LinkBoneIndex].Name);
 					//issue #2: Fix link bone index
 					//link bone index from skeleton.
 					addMMDIkInfo.ikLinkList[ikInfoID].BoneIndex
 						= ReferenceSkeleton.FindBoneIndex(addMMDIkInfo.ikLinkList[ikInfoID].BoneName);
+					if (addMMDIkInfo.ikLinkList[ikInfoID].BoneIndex == INDEX_NONE)
+					{
+						UE_LOG(LogMMD4UE4_PMXFactory, Warning,
+							TEXT("CreateMMDExtendFromMMDModel: Link bone '%s' missing in skeleton"),
+							*addMMDIkInfo.ikLinkList[ikInfoID].BoneName.ToString());
+						bValidChain = false;
+						break;
+					}
 					//limit flag
 					addMMDIkInfo.ikLinkList[ikInfoID].RotLockFlag = tempPmxIKPtr->Link[ikInfoID].RotLockFlag;
 					//min
@@ -1531,6 +1566,10 @@ UMMDExtendAsset * UPmxFactory::CreateMMDExtendFromMMDModel(
 					addMMDIkInfo.ikLinkList[ikInfoID].RotLockMax.X = tempPmxIKPtr->Link[ikInfoID].RotLockMax[0];
 					addMMDIkInfo.ikLinkList[ikInfoID].RotLockMax.Y = tempPmxIKPtr->Link[ikInfoID].RotLockMax[1];
 					addMMDIkInfo.ikLinkList[ikInfoID].RotLockMax.Z = tempPmxIKPtr->Link[ikInfoID].RotLockMax[2];
+				}
+				if (!bValidChain)
+				{
+					continue;
 				}
 				//add
 				NewMMDExtendAsset->IkInfoList.Add(addMMDIkInfo);
