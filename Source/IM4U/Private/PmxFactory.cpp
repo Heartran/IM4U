@@ -91,7 +91,15 @@ void UPmxFactory::PostInitProperties()
 {
 	Super::PostInitProperties();
 
-	ImportUI = NewObject<UPmxImportUI>(this, NAME_None, RF_NoFlags);
+	// Verifica che l'oggetto ImportUI non sia già stato creato
+	if (!ImportUI)
+	{
+		ImportUI = NewObject<UPmxImportUI>(this, NAME_None, RF_NoFlags);
+		if (!ImportUI)
+		{
+			UE_LOG(LogTemp, Error, TEXT("Impossibile creare l'oggetto UPmxImportUI"));
+		}
+	}
 }
 
 bool UPmxFactory::DoesSupportClass(UClass* Class)
@@ -1370,10 +1378,12 @@ USkeletalMesh* UPmxFactory::ImportSkeletalMesh(
 		{
 			SkeletalMesh->PhysicsAsset = ImportOptions->PhysicsAsset;
 		}*/
+	}
+#endif // phy
 
-		// see if we have skeleton set up
-		// if creating skeleton, create skeleeton
-		USkeleton* Skeleton = NULL;
+	// see if we have skeleton set up
+	// if creating skeleton, create skeleeton
+	USkeleton* Skeleton = NULL;
 		//Skeleton = ImportOptions->SkeletonForAnimation;
 		if (Skeleton == NULL)
 		{
@@ -1392,7 +1402,6 @@ USkeletalMesh* UPmxFactory::ImportSkeletalMesh(
 					return SkeletalMesh;
 				}
 			}
-		}
 		
 		// merge bones to the selected skeleton
 		if ( !Skeleton->MergeAllBonesToBoneTree( SkeletalMesh ) )
@@ -1423,7 +1432,6 @@ USkeletalMesh* UPmxFactory::ImportSkeletalMesh(
 			SkeletalMesh->MarkPackageDirty();
 		}
 	}
-#endif
 	return SkeletalMesh;
 }
 
