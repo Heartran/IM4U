@@ -24,6 +24,7 @@
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionMultiply.h"
 #include "Materials/MaterialExpressionConstant.h"
+#include "MaterialEditingLibrary.h"
 
 DEFINE_LOG_CATEGORY(LogCategoryPMXMaterialImport)
 
@@ -31,6 +32,59 @@ namespace
 {
 	FContentBrowserMenuExtender_SelectedAssets ContentBrowserExtenderDelegate;
 	FDelegateHandle ContentBrowserExtenderDelegateHandle;
+
+	template <typename TExpression>
+	TExpression* CreateExpression(UMaterial* Material, const FVector2D& NodeLocation)
+	{
+		if (!Material)
+		{
+			return nullptr;
+		}
+
+		const int32 NodePosX = FMath::RoundToInt(NodeLocation.X);
+		const int32 NodePosY = FMath::RoundToInt(NodeLocation.Y);
+		UMaterialExpression* Expression = UMaterialEditingLibrary::CreateMaterialExpression(
+			Material,
+			TExpression::StaticClass(),
+			NodePosX,
+			NodePosY);
+		return Cast<TExpression>(Expression);
+	}
+
+	bool ConnectExpressions(UMaterialExpression* FromExpression, const TCHAR* FromOutputName, UMaterialExpression* ToExpression, const TCHAR* ToInputName)
+	{
+		if (!FromExpression || !ToExpression)
+		{
+			return false;
+		}
+
+		const FString FromOutput = FromOutputName ? FString(FromOutputName) : FString();
+		const FString ToInput = ToInputName ? FString(ToInputName) : FString();
+		return UMaterialEditingLibrary::ConnectMaterialExpressions(FromExpression, FromOutput, ToExpression, ToInput);
+	}
+
+	bool ConnectToMaterialProperty(UMaterialExpression* FromExpression, const TCHAR* FromOutputName, EMaterialProperty Property)
+	{
+		if (!FromExpression)
+		{
+			return false;
+		}
+
+		const FString FromOutput = FromOutputName ? FString(FromOutputName) : FString();
+		return UMaterialEditingLibrary::ConnectMaterialProperty(FromExpression, FromOutput, Property);
+	}
+
+	UMaterialExpressionTextureSample* CreateTextureSampleExpression(UMaterial* Material, const FVector2D& NodeLocation, UTexture* Texture, bool bSetupAsNormalMap)
+	{
+		UMaterialExpressionTextureSample* TextureExpression = CreateExpression<UMaterialExpressionTextureSample>(Material, NodeLocation);
+		if (TextureExpression)
+		{
+			TextureExpression->Texture = Texture;
+			TextureExpression->SamplerType = bSetupAsNormalMap ? SAMPLERTYPE_Normal : SAMPLERTYPE_Color;
+			TextureExpression->SamplerSource = SSM_Wrap_WorldGroupSettings;
+		}
+		return TextureExpression;
+	}
 }
 
 /*UPmxMaterialImport::UPmxMaterialImport(const FObjectInitializer& ObjectInitializer)
@@ -403,147 +457,65 @@ UTexture* UPmxMaterialImport::ImportTexture(
 bool UPmxMaterialImport::CreateAndLinkExpressionForMaterialProperty(
 	MMD4UE4::PMX_MATERIAL& PmxMaterial,
 	UMaterial* UnrealMaterial,
-	const char* MaterialProperty,
-	FExpressionInput& MaterialInput,
 	bool bSetupAsNormalMap,
 	const FVector2D& Location,
-	TArray<UTexture*> &textureAssetList)
+	TArray<UTexture*>& textureAssetList)
 {
-	bool bCreated = false;
-#if 0
-	FbxProperty FbxProperty = FbxMaterial.FindProperty(MaterialProperty);
-	if (FbxProperty.IsValid())
+	if (!UnrealMaterial)
 	{
-		int32 LayeredTextureCount = FbxProperty.GetSrcObjectCount<FbxLayeredTexture>();
-		if (LayeredTextureCount>0)
-		{
-			UE_LOG(LogFbxMaterialImport, Warning, TEXT("Layered Textures are not supported (material %s)"), ANSI_TO_TCHAR(FbxMaterial.GetName()));
-		}
-		else
-		{
-#endif
-#if 1
-			int32 TextureCount = PmxMaterial.TextureIndex;//FbxProperty.GetSrcObjectCount<FbxTexture>();
-			if (TextureCount >= 0 && TextureCount <textureAssetList.Num())
-			{
-				//for (int32 TextureIndex = 0; TextureIndex<TextureCount; ++TextureIndex)
-				{
-					//FbxFileTexture* FbxTexture = FbxProperty.GetSrcObject<FbxFileTexture>(TextureIndex);
-
-					// create an unreal texture asset
-					UTexture* UnrealTexture = textureAssetList[TextureCount];//ImportTexture(FbxTexture, bSetupAsNormalMap);
-
-					if (UnrealTexture)
-					{
-						UnrealMaterial->BlendMode = BLEND_Masked;
-						//float ScaleU = FbxTexture->GetScaleU();
-						//float ScaleV = FbxTexture->GetScaleV();
-
-						//Multipule
-						UMaterialExpressionMultiply* MulExpression
-							= NewObject< UMaterialExpressionMultiply >(UnrealMaterial);
-						UnrealMaterial->Expressions.Add(MulExpression);
-						//UnrealMaterial->BaseColor.Expression = MulExpression;
-						MulExpression->MaterialExpressionEditorX = -250;
-						MulExpression->MaterialExpressionEditorY = 0;
-						MulExpression->bHidePreviewWindow = 0;
-
-						MulExpression->Desc = TEXT("Textuer * Texture alpha -> BaseColor");
-
-						//Multipule
-						UMaterialExpressionMultiply* MulExpression_2
-							= NewObject< UMaterialExpressionMultiply >(UnrealMaterial);
-						UnrealMaterial->Expressions.Add(MulExpression_2);
-						//UnrealMaterial->OpacityMask.Expression = MulExpression_2;
-						UnrealMaterial->BaseColor.Expression = MulExpression_2;
-						MulExpression_2->B.Expression = MulExpression;
-						MulExpression_2->MaterialExpressionEditorX = -250;
-						MulExpression_2->MaterialExpressionEditorY = 200;
-						MulExpression_2->bHidePreviewWindow = 0;
-
-						MulExpression_2->Desc = TEXT("Textuer alpha * Specure Coloer -> OpacityMask");
-						//MulExpression->ConstA = 1.0f;
-						//MulExpression->ConstB = FresnelBaseReflectFraction_DEPRECATED;
-
-						//MulExpression->A.Connect(SpecularColor_DEPRECATED.OutputIndex, SpecularColor_DEPRECATED.Expression);
-						//SpecularColor_DEPRECATED.Connect(0, MulExpression);
-
-
-						// A
-						// and link it to the material 
-						UMaterialExpressionTextureSample* UnrealTextureExpression
-							= NewObject<UMaterialExpressionTextureSample>(UnrealMaterial);
-						UnrealMaterial->Expressions.Add(UnrealTextureExpression);
-						//MaterialInput.Expression = UnrealTextureExpression;
-						MulExpression->A.Expression = UnrealTextureExpression;
-						MulExpression->B.Connect(4, UnrealTextureExpression);
-						//MulExpression_2->B.Connect(4, UnrealTextureExpression);
-						//MulExpression->B.Expression = UnrealTextureExpression.Outputs[4];
-						UnrealMaterial->OpacityMask.Connect(4, UnrealTextureExpression);
-						UnrealTextureExpression->Texture = UnrealTexture;
-						UnrealTextureExpression->SamplerType = bSetupAsNormalMap ? SAMPLERTYPE_Normal : SAMPLERTYPE_Color;
-						UnrealTextureExpression->MaterialExpressionEditorX = -500; //FMath::TruncToInt(Location.X);
-						UnrealTextureExpression->MaterialExpressionEditorY = 0;//FMath::TruncToInt(Location.Y);
-						UnrealTextureExpression->SamplerSource = SSM_Wrap_WorldGroupSettings;//For minus UV asix MMD(e.g. AnjeraBalz///)
-
-																							 //MulExpression->B.Connect(UnrealTextureExpression->Outputs[4].Expression);
-
-																							 //B 
-						UMaterialExpressionVectorParameter* MyColorExpression
-							= NewObject<UMaterialExpressionVectorParameter>(UnrealMaterial);
-						UnrealMaterial->Expressions.Add(MyColorExpression);
-						//UnrealMaterial->BaseColor.Expression = MyColorExpression;
-						//MulExpression->B.Expression = MyColorExpression;
-						MulExpression_2->A.Expression = MyColorExpression;
-
-						MyColorExpression->DefaultValue.R = PmxMaterial.Diffuse[0];
-						MyColorExpression->DefaultValue.G = PmxMaterial.Diffuse[1];
-						MyColorExpression->DefaultValue.B = PmxMaterial.Diffuse[2];
-						MyColorExpression->DefaultValue.A = PmxMaterial.Diffuse[3];//A
-						MyColorExpression->MaterialExpressionEditorX = -500;
-						MyColorExpression->MaterialExpressionEditorY = 300;
-						MyColorExpression->SetEditableName("DiffuseColor");
-						/*
-						// add/find UVSet and set it to the texture
-						FbxString UVSetName = FbxTexture->UVSet.Get();
-						FString LocalUVSetName = ANSI_TO_TCHAR(UVSetName.Buffer());
-						int32 SetIndex = UVSet.Find(LocalUVSetName);
-						if ((SetIndex != 0 && SetIndex != INDEX_NONE) || ScaleU != 1.0f || ScaleV != 1.0f)
-						{
-						// Create a texture coord node for the texture sample
-						UMaterialExpressionTextureCoordinate* MyCoordExpression = ConstructObject<UMaterialExpressionTextureCoordinate>(UMaterialExpressionTextureCoordinate::StaticClass(), UnrealMaterial);
-						UnrealMaterial->Expressions.Add(MyCoordExpression);
-						MyCoordExpression->CoordinateIndex = (SetIndex >= 0) ? SetIndex : 0;
-						MyCoordExpression->UTiling = ScaleU;
-						MyCoordExpression->VTiling = ScaleV;
-						UnrealTextureExpression->Coordinates.Expression = MyCoordExpression;
-						MyCoordExpression->MaterialExpressionEditorX = FMath::TruncToInt(Location.X - 175);
-						MyCoordExpression->MaterialExpressionEditorY = FMath::TruncToInt(Location.Y);
-
-						}
-
-						*/
-						bCreated = true;
-					}
-				}
-			}
-
-			if (MaterialInput.Expression)
-			{
-				TArray<FExpressionOutput> Outputs = MaterialInput.Expression->GetOutputs();
-				FExpressionOutput* Output = Outputs.GetData();
-				MaterialInput.Mask = Output->Mask;
-				MaterialInput.MaskR = Output->MaskR;
-				MaterialInput.MaskG = Output->MaskG;
-				MaterialInput.MaskB = Output->MaskB;
-				MaterialInput.MaskA = Output->MaskA;
-			}
-#endif
-#if 0
-		}
+		return false;
 	}
-#endif
-	return bCreated;
+
+	const int32 TextureIndex = PmxMaterial.TextureIndex;
+	if (!textureAssetList.IsValidIndex(TextureIndex))
+	{
+		return false;
+	}
+
+	UTexture* UnrealTexture = textureAssetList[TextureIndex];
+	if (!UnrealTexture)
+	{
+		return false;
+	}
+
+	UnrealMaterial->BlendMode = BLEND_Masked;
+
+	UMaterialExpressionTextureSample* TextureExpression = CreateTextureSampleExpression(
+		UnrealMaterial,
+		Location + FVector2D(-260.0f, 0.0f),
+		UnrealTexture,
+		bSetupAsNormalMap);
+	UMaterialExpressionMultiply* MultiplyTextureAndAlpha = CreateExpression<UMaterialExpressionMultiply>(
+		UnrealMaterial,
+		Location);
+	UMaterialExpressionMultiply* MultiplyWithDiffuse = CreateExpression<UMaterialExpressionMultiply>(
+		UnrealMaterial,
+		Location + FVector2D(0.0f, 200.0f));
+	UMaterialExpressionVectorParameter* DiffuseParameter = CreateExpression<UMaterialExpressionVectorParameter>(
+		UnrealMaterial,
+		Location + FVector2D(-260.0f, 280.0f));
+
+	if (!TextureExpression || !MultiplyTextureAndAlpha || !MultiplyWithDiffuse || !DiffuseParameter)
+	{
+		return false;
+	}
+
+	DiffuseParameter->SetEditableName(TEXT("DiffuseColor"));
+	DiffuseParameter->DefaultValue = FLinearColor(
+		PmxMaterial.Diffuse[0],
+		PmxMaterial.Diffuse[1],
+		PmxMaterial.Diffuse[2],
+		PmxMaterial.Diffuse[3]);
+
+	ConnectExpressions(TextureExpression, TEXT("RGB"), MultiplyTextureAndAlpha, TEXT("A"));
+	ConnectExpressions(TextureExpression, TEXT("A"), MultiplyTextureAndAlpha, TEXT("B"));
+	ConnectExpressions(MultiplyTextureAndAlpha, TEXT(""), MultiplyWithDiffuse, TEXT("B"));
+	ConnectExpressions(DiffuseParameter, TEXT(""), MultiplyWithDiffuse, TEXT("A"));
+
+	ConnectToMaterialProperty(MultiplyWithDiffuse, TEXT(""), EMaterialProperty::MP_BaseColor);
+	ConnectToMaterialProperty(TextureExpression, TEXT("A"), EMaterialProperty::MP_OpacityMask);
+
+	return true;
 }
 //-------------------------------------------------------------------------
 //
@@ -553,118 +525,50 @@ void UPmxMaterialImport::FixupMaterial(
 	UMaterial* UnrealMaterial
 	)
 {
-	// add a basic diffuse color if no texture is linked to diffuse
-	if (UnrealMaterial->BaseColor.Expression == NULL)
+	if (!UnrealMaterial)
 	{
-		UnrealMaterial->BlendMode = BLEND_Masked;
-		//FbxDouble3 DiffuseColor;
-
-		UMaterialExpressionVectorParameter* MyColorExpression
-			= NewObject<UMaterialExpressionVectorParameter>(UnrealMaterial);
-		UnrealMaterial->Expressions.Add(MyColorExpression);
-		UnrealMaterial->BaseColor.Expression = MyColorExpression;
-		UnrealMaterial->OpacityMask.Connect(4, MyColorExpression);
-		MyColorExpression->MaterialExpressionEditorX = -500;
-		MyColorExpression->MaterialExpressionEditorY = 00;
-		MyColorExpression->SetEditableName("DiffuseColor");
-
-		bool bFoundDiffuseColor = true;
-		/*
-		if (PmxMaterial.GetClassId().Is(FbxSurfacePhong::ClassId))
-		{
-		DiffuseColor = ((FbxSurfacePhong&)(PmxMaterial)).Diffuse.Get();
-		}
-		else if (PmxMaterial.GetClassId().Is(FbxSurfaceLambert::ClassId))
-		{
-		DiffuseColor = ((FbxSurfaceLambert&)(PmxMaterial)).Diffuse.Get();
-		}
-		else
-		{
-		bFoundDiffuseColor = false;
-		}*/
-		if (bFoundDiffuseColor)
-		{
-			MyColorExpression->DefaultValue.R = PmxMaterial.Diffuse[0];//R
-			MyColorExpression->DefaultValue.G = PmxMaterial.Diffuse[1];//G
-			MyColorExpression->DefaultValue.B = PmxMaterial.Diffuse[2];//B
-			MyColorExpression->DefaultValue.A = PmxMaterial.Diffuse[3];//A
-		}
-		else
-		{
-			// use random color because there may be multiple materials, then they can be different 
-			MyColorExpression->DefaultValue.R = 0.5f + (0.5f*FMath::Rand()) / RAND_MAX;
-			MyColorExpression->DefaultValue.G = 0.5f + (0.5f*FMath::Rand()) / RAND_MAX;
-			MyColorExpression->DefaultValue.B = 0.5f + (0.5f*FMath::Rand()) / RAND_MAX;
-		}
-
-		TArray<FExpressionOutput> Outputs = UnrealMaterial->BaseColor.Expression->GetOutputs();
-		FExpressionOutput* Output = Outputs.GetData();
-		UnrealMaterial->BaseColor.Mask = Output->Mask;
-		UnrealMaterial->BaseColor.MaskR = Output->MaskR;
-		UnrealMaterial->BaseColor.MaskG = Output->MaskG;
-		UnrealMaterial->BaseColor.MaskB = Output->MaskB;
-		UnrealMaterial->BaseColor.MaskA = Output->MaskA;
+		return;
 	}
 
-	//////////////////////////
-#if 1
-	// add a basic diffuse color if no texture is linked to diffuse
-	if (UnrealMaterial->AmbientOcclusion.Expression == NULL)
+	if (!UMaterialEditingLibrary::GetMaterialPropertyInputNode(UnrealMaterial, EMaterialProperty::MP_BaseColor))
 	{
-		//FbxDouble3 DiffuseColor;
+		UMaterialExpressionVectorParameter* DiffuseExpression = CreateExpression<UMaterialExpressionVectorParameter>(
+			UnrealMaterial,
+			FVector2D(-500.0f, 0.0f));
+		if (DiffuseExpression)
+		{
+			UnrealMaterial->BlendMode = BLEND_Masked;
+			DiffuseExpression->SetEditableName(TEXT("DiffuseColor"));
+			DiffuseExpression->DefaultValue = FLinearColor(
+				PmxMaterial.Diffuse[0],
+				PmxMaterial.Diffuse[1],
+				PmxMaterial.Diffuse[2],
+				PmxMaterial.Diffuse[3]);
 
-		UMaterialExpressionVectorParameter* MyColorExpression
-			= NewObject<UMaterialExpressionVectorParameter>(UnrealMaterial);
-		UnrealMaterial->Expressions.Add(MyColorExpression);
-		UnrealMaterial->AmbientOcclusion.Expression = MyColorExpression;
-		MyColorExpression->MaterialExpressionEditorX = -500;
-		MyColorExpression->MaterialExpressionEditorY = 500;
-		MyColorExpression->SetEditableName("AmbientColor");
-
-		bool bFoundDiffuseColor = true;
-		/*
-		if (PmxMaterial.GetClassId().Is(FbxSurfacePhong::ClassId))
-		{
-		DiffuseColor = ((FbxSurfacePhong&)(PmxMaterial)).Diffuse.Get();
+			ConnectToMaterialProperty(DiffuseExpression, TEXT(""), EMaterialProperty::MP_BaseColor);
+			ConnectToMaterialProperty(DiffuseExpression, TEXT("A"), EMaterialProperty::MP_OpacityMask);
 		}
-		else if (PmxMaterial.GetClassId().Is(FbxSurfaceLambert::ClassId))
-		{
-		DiffuseColor = ((FbxSurfaceLambert&)(PmxMaterial)).Diffuse.Get();
-		}
-		else
-		{
-		bFoundDiffuseColor = false;
-		}*/
-		if (bFoundDiffuseColor)
-		{
-			MyColorExpression->DefaultValue.R = PmxMaterial.Ambient[0];
-			MyColorExpression->DefaultValue.G = PmxMaterial.Ambient[1];
-			MyColorExpression->DefaultValue.B = PmxMaterial.Ambient[2];
-		}
-		else
-		{
-			// use random color because there may be multiple materials, then they can be different 
-			MyColorExpression->DefaultValue.R = 0.5f + (0.5f*FMath::Rand()) / RAND_MAX;
-			MyColorExpression->DefaultValue.G = 0.5f + (0.5f*FMath::Rand()) / RAND_MAX;
-			MyColorExpression->DefaultValue.B = 0.5f + (0.5f*FMath::Rand()) / RAND_MAX;
-		}
-
-		TArray<FExpressionOutput> Outputs = UnrealMaterial->AmbientOcclusion.Expression->GetOutputs();
-		FExpressionOutput* Output = Outputs.GetData();
-		UnrealMaterial->AmbientOcclusion.Mask = Output->Mask;
-		UnrealMaterial->AmbientOcclusion.MaskR = Output->MaskR;
-		UnrealMaterial->AmbientOcclusion.MaskG = Output->MaskG;
-		UnrealMaterial->AmbientOcclusion.MaskB = Output->MaskB;
-		UnrealMaterial->AmbientOcclusion.MaskA = Output->MaskA;
 	}
-#endif
-	//CullingOff//
+
+	if (!UMaterialEditingLibrary::GetMaterialPropertyInputNode(UnrealMaterial, EMaterialProperty::MP_AmbientOcclusion))
+	{
+		UMaterialExpressionVectorParameter* AmbientExpression = CreateExpression<UMaterialExpressionVectorParameter>(
+			UnrealMaterial,
+			FVector2D(-500.0f, 400.0f));
+		if (AmbientExpression)
+		{
+			AmbientExpression->SetEditableName(TEXT("AmbientColor"));
+			AmbientExpression->DefaultValue = FLinearColor(
+				PmxMaterial.Ambient[0],
+				PmxMaterial.Ambient[1],
+				PmxMaterial.Ambient[2],
+				1.0f);
+
+			ConnectToMaterialProperty(AmbientExpression, TEXT(""), EMaterialProperty::MP_AmbientOcclusion);
+		}
+	}
+
 	UnrealMaterial->TwoSided = PmxMaterial.CullingOff;
-
-	// IF Translucent Opacu?
-	//UnrealMaterial->BlendMode = BLEND_Translucent;
-	// IF Addtion
-	//UnrealMaterial->BlendMode = BLEND_Additive;
 }
 
 void UPmxMaterialImport::CreateUnrealMaterial(
@@ -769,10 +673,6 @@ void UPmxMaterialImport::CreateUnrealMaterial(
 			CreateAndLinkExpressionForMaterialProperty_ForMmdAutoluminus(
 				PmxMaterial,
 				UnrealMaterial,
-				//NULL,
-				UnrealMaterial->BaseColor,
-				//false,
-				//UVSets,
 				FVector2D(240, -320),
 				textureAssetList
 			) == true)
@@ -782,8 +682,6 @@ void UPmxMaterialImport::CreateUnrealMaterial(
 			CreateAndLinkExpressionForMaterialProperty(
 				PmxMaterial,
 				UnrealMaterial,
-				NULL,
-				UnrealMaterial->BaseColor,
 				false,
 				FVector2D(240, -320),
 				textureAssetList
@@ -809,6 +707,7 @@ void UPmxMaterialImport::CreateUnrealMaterial(
 		//CreateAndLinkExpressionForMaterialProperty( *FbxMaterial, UnrealMaterial, KFbxSurfaceMaterial::sTransparencyFactor, UnrealMaterial->OpacityMask, false, UVSets);
 		*/
 		FixupMaterial(PmxMaterial, UnrealMaterial); // add random diffuse if none exists
+		UMaterialEditingLibrary::LayoutMaterialExpressions(UnrealMaterial);
 
 		// compile shaders for PC (from UPrecompileShadersCommandlet::ProcessMaterial
 		// and FMaterialEditor::UpdateOriginalMaterial)
@@ -899,161 +798,71 @@ void UPmxMaterialImport::CreateUnrealMaterial(
 bool UPmxMaterialImport::CreateAndLinkExpressionForMaterialProperty_ForMmdAutoluminus(
 	MMD4UE4::PMX_MATERIAL& PmxMaterial,
 	UMaterial* UnrealMaterial,
-	//const char* MaterialProperty,
-	FExpressionInput& MaterialInput,
-	//bool bSetupAsNormalMap,
-	//TArray<FString>& UVSet,
 	const FVector2D& Location,
-	TArray<UTexture*> &textureAssetList)
+	TArray<UTexture*>& textureAssetList)
 {
-	bool bCreated = false;
-#if 1
-	int32 TextureCount = PmxMaterial.TextureIndex;//FbxProperty.GetSrcObjectCount<FbxTexture>();
-	if (TextureCount >= 0 && TextureCount <textureAssetList.Num())
+	if (!UnrealMaterial)
 	{
-		//for (int32 TextureIndex = 0; TextureIndex<TextureCount; ++TextureIndex)
-		if (PmxMaterial.SpecularPower > 100) //auto luminus
-		{
-			//FbxFileTexture* FbxTexture = FbxProperty.GetSrcObject<FbxFileTexture>(TextureIndex);
-
-			// create an unreal texture asset
-			UTexture* UnrealTexture = textureAssetList[TextureCount];//ImportTexture(FbxTexture, bSetupAsNormalMap);
-
-			if (UnrealTexture)
-			{
-				UnrealMaterial->BlendMode = BLEND_Additive;
-				//float ScaleU = FbxTexture->GetScaleU();
-				//float ScaleV = FbxTexture->GetScaleV();
-
-				//Multipule
-				UMaterialExpressionMultiply* MulExpression
-					= NewObject< UMaterialExpressionMultiply >(UnrealMaterial);
-				UnrealMaterial->Expressions.Add(MulExpression);
-				UnrealMaterial->BaseColor.Expression = MulExpression; //test
-				MulExpression->MaterialExpressionEditorX = -250;
-				MulExpression->MaterialExpressionEditorY = 0;
-				MulExpression->bHidePreviewWindow = 0;
-
-				MulExpression->Desc = TEXT("Textuer * Texture alpha -> BaseColor");
-
-				//Multipule
-				UMaterialExpressionMultiply* MulExpression_2
-					= NewObject< UMaterialExpressionMultiply >(UnrealMaterial);
-				UnrealMaterial->Expressions.Add(MulExpression_2);
-				//UnrealMaterial->OpacityMask.Expression = MulExpression_2;
-				MulExpression_2->MaterialExpressionEditorX = -250;
-				MulExpression_2->MaterialExpressionEditorY = 200;
-				MulExpression_2->bHidePreviewWindow = 0;
-
-				MulExpression_2->Desc = TEXT("Textuer alpha * Specure Coloer -> OpacityMask");
-				//MulExpression->ConstA = 1.0f;
-				//MulExpression->ConstB = FresnelBaseReflectFraction_DEPRECATED;
-
-				//MulExpression->A.Connect(SpecularColor_DEPRECATED.OutputIndex, SpecularColor_DEPRECATED.Expression);
-				//SpecularColor_DEPRECATED.Connect(0, MulExpression);
-
-
-				//Multipule
-				UMaterialExpressionMultiply* MulExpression_3
-					= NewObject< UMaterialExpressionMultiply >( UnrealMaterial);
-				UnrealMaterial->Expressions.Add(MulExpression_3);
-				//UnrealMaterial->EmissiveColor.Expression = MulExpression_3; //TES: lighting EmmisicveColor For AutoLuminous 
-				MulExpression_3->MaterialExpressionEditorX = -250;
-				MulExpression_3->MaterialExpressionEditorY = 400;
-				MulExpression_3->bHidePreviewWindow = 0;
-				MulExpression_3->A.Expression = MulExpression_2;
-
-				MulExpression_3->Desc = TEXT("Textuer alpha * Specure Coloer -> OpacityMask");
-				//MulExpression->ConstA = 1.0f;
-				//MulExpression->ConstB = FresnelBaseReflectFraction_DEPRECATED;
-
-				//MulExpression->A.Connect(SpecularColor_DEPRECATED.OutputIndex, SpecularColor_DEPRECATED.Expression);
-				//SpecularColor_DEPRECATED.Connect(0, MulExpression);
-
-				// A
-				// and link it to the material 
-				UMaterialExpressionTextureSample* UnrealTextureExpression
-					= NewObject<UMaterialExpressionTextureSample>(UnrealMaterial);
-				UnrealMaterial->Expressions.Add(UnrealTextureExpression);
-				//MaterialInput.Expression = UnrealTextureExpression;
-				MulExpression->A.Expression = UnrealTextureExpression;
-				MulExpression->B.Connect(4, UnrealTextureExpression);
-				MulExpression_2->B.Connect(4, UnrealTextureExpression);
-				UnrealMaterial->OpacityMask.Connect(4, UnrealTextureExpression);//TEST: Non Light EmmisciveColor For Easy AutoLuminous
-				//MulExpression->B.Expression = UnrealTextureExpression.Outputs[4];
-				UnrealTextureExpression->Texture = UnrealTexture;
-				UnrealTextureExpression->SamplerType = /*bSetupAsNormalMap ? SAMPLERTYPE_Normal :*/ SAMPLERTYPE_Color;
-				UnrealTextureExpression->MaterialExpressionEditorX = -500; //FMath::TruncToInt(Location.X);
-				UnrealTextureExpression->MaterialExpressionEditorY = 0;//FMath::TruncToInt(Location.Y);
-				UnrealTextureExpression->SamplerSource = SSM_Wrap_WorldGroupSettings;//For minus UV asix MMD(e.g. AnjeraBalz///)
-
-				//MulExpression->B.Connect(UnrealTextureExpression->Outputs[4].Expression);
-
-				//B 
-				UMaterialExpressionVectorParameter* MyColorExpression
-					= NewObject<UMaterialExpressionVectorParameter>(UnrealMaterial);
-				UnrealMaterial->Expressions.Add(MyColorExpression);
-				//UnrealMaterial->BaseColor.Expression = MyColorExpression;
-				//MulExpression->B.Expression = MyColorExpression;
-				MulExpression_2->A.Expression = MyColorExpression;
-
-				MyColorExpression->DefaultValue.R = PmxMaterial.Diffuse[0];
-				MyColorExpression->DefaultValue.G = PmxMaterial.Diffuse[1];
-				MyColorExpression->DefaultValue.B = PmxMaterial.Diffuse[2];
-				MyColorExpression->DefaultValue.A = PmxMaterial.Diffuse[3];//A
-				MyColorExpression->MaterialExpressionEditorX = -500;
-				MyColorExpression->MaterialExpressionEditorY = 300;
-				MyColorExpression->SetEditableName("DiffuseColor");
-
-				//const 
-				UMaterialExpressionConstant* MyConstExpression
-					= NewObject<UMaterialExpressionConstant>(UnrealMaterial);
-				UnrealMaterial->Expressions.Add(MyConstExpression);
-				//UnrealMaterial->BaseColor.Expression = MyColorExpression;
-				//MulExpression->B.Expression = MyColorExpression;
-				MulExpression_3->B.Expression = MyConstExpression;
-
-				MyConstExpression->R = PmxMaterial.SpecularPower - 100.;
-				MyConstExpression->MaterialExpressionEditorX = -500;
-				MyConstExpression->MaterialExpressionEditorY = 500;
-
-				/*
-				// add/find UVSet and set it to the texture
-				FbxString UVSetName = FbxTexture->UVSet.Get();
-				FString LocalUVSetName = ANSI_TO_TCHAR(UVSetName.Buffer());
-				int32 SetIndex = UVSet.Find(LocalUVSetName);
-				if ((SetIndex != 0 && SetIndex != INDEX_NONE) || ScaleU != 1.0f || ScaleV != 1.0f)
-				{
-				// Create a texture coord node for the texture sample
-				UMaterialExpressionTextureCoordinate* MyCoordExpression = ConstructObject<UMaterialExpressionTextureCoordinate>(UMaterialExpressionTextureCoordinate::StaticClass(), UnrealMaterial);
-				UnrealMaterial->Expressions.Add(MyCoordExpression);
-				MyCoordExpression->CoordinateIndex = (SetIndex >= 0) ? SetIndex : 0;
-				MyCoordExpression->UTiling = ScaleU;
-				MyCoordExpression->VTiling = ScaleV;
-				UnrealTextureExpression->Coordinates.Expression = MyCoordExpression;
-				MyCoordExpression->MaterialExpressionEditorX = FMath::TruncToInt(Location.X - 175);
-				MyCoordExpression->MaterialExpressionEditorY = FMath::TruncToInt(Location.Y);
-
-				}
-
-				*/
-				bCreated = true;
-			}
-		}
+		return false;
 	}
 
-	if (MaterialInput.Expression)
+	if (PmxMaterial.SpecularPower <= 100.0f)
 	{
-		TArray<FExpressionOutput> Outputs = MaterialInput.Expression->GetOutputs();
-		FExpressionOutput* Output = Outputs.GetData();
-		MaterialInput.Mask = Output->Mask;
-		MaterialInput.MaskR = Output->MaskR;
-		MaterialInput.MaskG = Output->MaskG;
-		MaterialInput.MaskB = Output->MaskB;
-		MaterialInput.MaskA = Output->MaskA;
+		return false;
 	}
-#endif
-	return bCreated;
+
+	const int32 TextureIndex = PmxMaterial.TextureIndex;
+	if (!textureAssetList.IsValidIndex(TextureIndex))
+	{
+		return false;
+	}
+
+	UTexture* UnrealTexture = textureAssetList[TextureIndex];
+	if (!UnrealTexture)
+	{
+		return false;
+	}
+
+	UnrealMaterial->BlendMode = BLEND_Additive;
+
+	UMaterialExpressionTextureSample* TextureExpression = CreateTextureSampleExpression(
+		UnrealMaterial,
+		Location + FVector2D(-260.0f, 0.0f),
+		UnrealTexture,
+		false);
+	UMaterialExpressionMultiply* MultiplyTextureAndAlpha = CreateExpression<UMaterialExpressionMultiply>(UnrealMaterial, Location);
+	UMaterialExpressionMultiply* MultiplyDiffuse = CreateExpression<UMaterialExpressionMultiply>(UnrealMaterial, Location + FVector2D(0.0f, 200.0f));
+	UMaterialExpressionMultiply* MultiplyEmissive = CreateExpression<UMaterialExpressionMultiply>(UnrealMaterial, Location + FVector2D(0.0f, 400.0f));
+	UMaterialExpressionVectorParameter* DiffuseParameter = CreateExpression<UMaterialExpressionVectorParameter>(UnrealMaterial, Location + FVector2D(-260.0f, 300.0f));
+	UMaterialExpressionConstant* SpecularConstant = CreateExpression<UMaterialExpressionConstant>(UnrealMaterial, Location + FVector2D(-260.0f, 520.0f));
+
+	if (!TextureExpression || !MultiplyTextureAndAlpha || !MultiplyDiffuse || !MultiplyEmissive || !DiffuseParameter || !SpecularConstant)
+	{
+		return false;
+	}
+
+	DiffuseParameter->SetEditableName(TEXT("DiffuseColor"));
+	DiffuseParameter->DefaultValue = FLinearColor(
+		PmxMaterial.Diffuse[0],
+		PmxMaterial.Diffuse[1],
+		PmxMaterial.Diffuse[2],
+		PmxMaterial.Diffuse[3]);
+
+	SpecularConstant->R = FMath::Max(0.0f, PmxMaterial.SpecularPower - 100.0f);
+
+	ConnectExpressions(TextureExpression, TEXT("RGB"), MultiplyTextureAndAlpha, TEXT("A"));
+	ConnectExpressions(TextureExpression, TEXT("A"), MultiplyTextureAndAlpha, TEXT("B"));
+	ConnectToMaterialProperty(MultiplyTextureAndAlpha, TEXT(""), EMaterialProperty::MP_BaseColor);
+
+	ConnectExpressions(DiffuseParameter, TEXT(""), MultiplyDiffuse, TEXT("A"));
+	ConnectExpressions(TextureExpression, TEXT("A"), MultiplyDiffuse, TEXT("B"));
+	ConnectExpressions(MultiplyDiffuse, TEXT(""), MultiplyEmissive, TEXT("A"));
+	ConnectExpressions(SpecularConstant, TEXT(""), MultiplyEmissive, TEXT("B"));
+
+	ConnectToMaterialProperty(TextureExpression, TEXT("A"), EMaterialProperty::MP_OpacityMask);
+	ConnectToMaterialProperty(MultiplyEmissive, TEXT(""), EMaterialProperty::MP_EmissiveColor);
+
+	return true;
 }
 
 

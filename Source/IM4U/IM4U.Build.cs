@@ -111,7 +111,8 @@ namespace UnrealBuildTool.Rules
 				{
 					"EditorStyle",
 					"EditorWidgets",
-					"SkeletalMeshUtilitiesCommon"
+					"SkeletalMeshUtilitiesCommon",
+					"MaterialEditor"
 					// ... add private dependencies that you statically link with here ...
 				}
 				);

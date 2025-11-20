@@ -120,8 +120,6 @@ public:
 	bool CreateAndLinkExpressionForMaterialProperty(
 		MMD4UE4::PMX_MATERIAL& PmxMaterial,
 		UMaterial* UnrealMaterial,
-		const char* MaterialProperty,
-		FExpressionInput& MaterialInput,
 		bool bSetupAsNormalMap,
 		const FVector2D& Location,
 		TArray<UTexture*> &textureAssetList);
@@ -132,10 +130,6 @@ public:
 	bool CreateAndLinkExpressionForMaterialProperty_ForMmdAutoluminus(
 		MMD4UE4::PMX_MATERIAL& PmxMaterial,
 		UMaterial* UnrealMaterial,
-		//const char* MaterialProperty,
-		FExpressionInput& MaterialInput,
-		//bool bSetupAsNormalMap,
-		//TArray<FString>& UVSet,
 		const FVector2D& Location,
 		TArray<UTexture*> &textureAssetList);
 
